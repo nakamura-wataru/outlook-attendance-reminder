@@ -1,0 +1,12 @@
+node_modules/
+.cache/
+dist/
+.DS_Store
+.env
+.env.*
+*.log
+config.json
+preferences.json
+calendar-state.json
+calendar-start.txt
+calendar-end.txt
