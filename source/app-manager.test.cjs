@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createManager, makeAgent } = require('./app-manager.cjs');
+const { defaultSchedule } = require('./weekly-schedule.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
 const calendar = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Reminder Test//EN\r\nEND:VCALENDAR\r\n';
 
@@ -12,7 +13,7 @@ function fixture(t) {
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const root = path.join(home, 'Library/Application Support/OutlookAttendanceReminder');
   const bundle = path.join(home, 'Applications/打刻 & リマインダー.app');
-  const calls = [], loaded = new Set();
+  const calls = [], loaded = new Set(), fetches = [];
   let failNextBootstrap = false;
   const call = (command, args) => {
     calls.push({ command, args });
@@ -30,10 +31,44 @@ function fixture(t) {
     }
     return { status: 0 };
   };
-  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, fetch: async () => new Response(calendar) });
+  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, fetch: async () => { fetches.push(true); return new Response(calendar); } });
   const input = (value = 'https://example.invalid/calendar.ics') => { const file = path.join(home, 'private-input.txt'); fs.writeFileSync(file, value, { mode: 0o600 }); return file; };
-  return { home, root, bundle, manager, input, calls, loaded, failBootstrap: () => { failNextBootstrap = true; } };
+  return { home, root, bundle, manager, input, calls, loaded, fetches, failBootstrap: () => { failNextBootstrap = true; } };
 }
+
+test('weekly mode configures without an Outlook account or network request and survives stop/restart', t => {
+  const f = fixture(t); const weekly = { ...defaultSchedule(), mode: 'weekly' };
+  const file = f.input(JSON.stringify(weekly)); f.manager.configureSchedule(file);
+  assert.equal(fs.existsSync(file), false); assert.equal(fs.existsSync(path.join(f.root, 'config.json')), false);
+  assert.equal(f.fetches.length, 0); assert.equal(f.manager.enabled(), true);
+  assert.equal(fs.statSync(path.join(f.root, 'schedule.json')).mode & 0o777, 0o600);
+  assert.match(f.manager.status(), /週間予定/);
+  f.manager.stop(); f.manager.ensure(); assert.equal(f.manager.enabled(), false);
+  f.manager.start(); assert.equal(f.manager.enabled(), true); assert.deepEqual(f.manager.schedule(), weekly);
+});
+test('mode changes preserve the Outlook link, weekday times, and notification history', async t => {
+  const f = fixture(t); await f.manager.configure(f.input());
+  const calendarConfig = fs.readFileSync(path.join(f.root, 'config.json'));
+  const statePath = path.join(f.root, 'calendar-state.json'), state = { targets: [], notified: { previous: 123 }, fetchedAt: 0 };
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  const weekly = { ...defaultSchedule(), mode: 'weekly' }; weekly.weekdays[3].end = '20:00';
+  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
+  f.manager.configureSchedule(f.input(JSON.stringify({ ...weekly, mode: 'outlook' })));
+  assert.deepEqual(fs.readFileSync(path.join(f.root, 'config.json')), calendarConfig);
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), state);
+  assert.equal(f.manager.schedule().weekdays[3].end, '20:00'); assert.equal(f.fetches.length, 1);
+});
+test('invalid weekly settings and startup failures preserve the previous valid schedule', t => {
+  const f = fixture(t), weekly = { ...defaultSchedule(), mode: 'weekly' };
+  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
+  for (const value of ['not json', JSON.stringify({ ...weekly, weekdays: [] }), JSON.stringify({ ...weekly, mode: 'outlook' })]) {
+    const file = f.input(value); assert.throws(() => f.manager.configureSchedule(file));
+    assert.equal(fs.existsSync(file), false); assert.deepEqual(f.manager.schedule(), weekly);
+  }
+  const changed = structuredClone(weekly); changed.weekdays[0].start = '10:00';
+  f.failBootstrap(); assert.throws(() => f.manager.configureSchedule(f.input(JSON.stringify(changed))));
+  assert.deepEqual(f.manager.schedule(), weekly); assert.equal(f.manager.enabled(), true);
+});
 
 test('configures using a private input file and only the bundled runtime, without changing the app bundle', async t => {
   const f = fixture(t); const file = f.input();

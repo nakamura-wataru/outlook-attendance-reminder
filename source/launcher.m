@@ -72,6 +72,15 @@ static void DrawReminderClock(NSRect bounds) {
 @property NSWindow *recorderWindow;
 @property WKWebView *recorderWebView;
 @property NSTextField *recorderStatus;
+@property NSWindow *scheduleWindow;
+@property NSButton *outlookModeButton;
+@property NSButton *weeklyModeButton;
+@property NSButton *outlookSettingsButton;
+@property NSButton *scheduleSaveButton;
+@property NSArray<NSButton *> *weekdayButtons;
+@property NSArray<NSDatePicker *> *startPickers;
+@property NSArray<NSDatePicker *> *endPickers;
+@property BOOL scheduleBusy;
 @end
 
 @implementation ReminderController
@@ -101,7 +110,7 @@ static void DrawReminderClock(NSRect bounds) {
     NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"打刻リマインダー";
     alert.icon = [self clockImage];
     alert.informativeText = message; [alert addButtonWithTitle:@"閉じる"];
-    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+    [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:nil];
 }
 - (void)refreshStatus {
     [self runCommand:@"status" input:nil completion:^(BOOL ok, NSString *text) {
@@ -113,7 +122,7 @@ static void DrawReminderClock(NSRect bounds) {
             self.statusBadge.stringValue = enabledOK && [value isEqualToString:@"yes"] ? @"● お知らせ中" : ([text hasPrefix:@"予定表：未設定"] ? @"○ 未設定" : @"○ 停止中");
             [self runCommand:@"can-migrate" input:nil completion:^(BOOL migrationOK, NSString *canMigrate) {
                 self.migrationButton.hidden = !(migrationOK && [canMigrate isEqualToString:@"yes"]);
-                [self.window setContentSize:NSMakeSize(560, self.migrationButton.hidden ? 512 : 576)];
+                [self.window setContentSize:NSMakeSize(560, self.migrationButton.hidden ? 536 : 600)];
             }];
         }];
     }];
@@ -189,7 +198,7 @@ static void DrawReminderClock(NSRect bounds) {
     NSStackView *schedule = [NSStackView stackViewWithViews:@[[self scheduleCard:YES], [self scheduleCard:NO]]];
     schedule.spacing = 16; schedule.distribution = NSStackViewDistributionFillEqually; schedule.alignment = NSLayoutAttributeTop;
     [stack addArrangedSubview:schedule]; [schedule.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    NSButton *configure = [self button:@"予定表を設定・変更" selector:@selector(configure:)]; configure.toolTip = @"自分のOutlook予定表のICSリンクを登録します";
+    NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"Outlookの予定表か、曜日ごとの出勤・退勤時刻を選びます";
     NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知内のKING OF TIMEと再通知の選択肢を確認します。再通知は予約しません";
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
     NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
@@ -209,7 +218,7 @@ static void DrawReminderClock(NSRect bounds) {
     NSSecureTextField *field = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,360,26)];
     field.placeholderString = @"https://…"; alert.accessoryView = field;
     [alert addButtonWithTitle:@"設定"]; [alert addButtonWithTitle:@"キャンセル"];
-    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+    [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         NSString *temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-calendar-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         int descriptor = open(temporary.fileSystemRepresentation, O_WRONLY|O_CREAT|O_EXCL, 0600);
@@ -221,8 +230,118 @@ static void DrawReminderClock(NSRect bounds) {
         if (written != data.length) { unlink(temporary.fileSystemRepresentation); [self showMessage:@"リンクを保存できませんでした。"]; return; }
         self.statusLabel.stringValue = @"予定表への接続を確認しています…";
         [self runCommand:@"configure" input:temporary completion:^(BOOL ok, NSString *message) {
-            unlink(temporary.fileSystemRepresentation); [self showMessage:message]; [self refreshStatus];
+            unlink(temporary.fileSystemRepresentation);
+            if (ok && self.scheduleWindow) { self.outlookModeButton.state = NSControlStateValueOn; self.weeklyModeButton.state = NSControlStateValueOff; [self updateScheduleControls:nil]; }
+            [self showMessage:message]; [self refreshStatus];
         }];
+    }];
+}
+- (NSDateFormatter *)scheduleTimeFormatter:(BOOL)includeDate {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init]; formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Tokyo"]; formatter.dateFormat = includeDate ? @"yyyy-MM-dd HH:mm" : @"HH:mm"; return formatter;
+}
+- (NSDatePicker *)schedulePicker:(NSString *)time {
+    NSDatePicker *picker = [[NSDatePicker alloc] init]; picker.translatesAutoresizingMaskIntoConstraints = NO;
+    picker.datePickerStyle = NSDatePickerStyleTextFieldAndStepper; picker.datePickerElements = NSDatePickerElementFlagHourMinute;
+    picker.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"ja_JP"]; picker.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Tokyo"];
+    picker.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian]; picker.calendar.timeZone = picker.timeZone;
+    picker.font = [NSFont systemFontOfSize:14]; picker.drawsBackground = YES;
+    picker.dateValue = [[self scheduleTimeFormatter:YES] dateFromString:[@"2001-01-01 " stringByAppendingString:time]];
+    [NSLayoutConstraint activateConstraints:@[[picker.widthAnchor constraintEqualToConstant:128], [picker.heightAnchor constraintEqualToConstant:30]]];
+    return picker;
+}
+- (void)chooseScheduleSource:(NSButton *)sender {
+    self.outlookModeButton.state = sender == self.outlookModeButton ? NSControlStateValueOn : NSControlStateValueOff;
+    self.weeklyModeButton.state = sender == self.weeklyModeButton ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updateScheduleControls:nil];
+}
+- (void)updateScheduleControls:(id)sender {
+    BOOL weekly = self.weeklyModeButton.state == NSControlStateValueOn;
+    self.outlookModeButton.enabled = !self.scheduleBusy; self.weeklyModeButton.enabled = !self.scheduleBusy;
+    self.outlookSettingsButton.enabled = !weekly && !self.scheduleBusy; self.scheduleSaveButton.enabled = !self.scheduleBusy;
+    for (NSUInteger index = 0; index < self.weekdayButtons.count; index++) {
+        NSButton *day = self.weekdayButtons[index]; day.enabled = weekly && !self.scheduleBusy;
+        BOOL enabled = day.enabled && day.state == NSControlStateValueOn;
+        self.startPickers[index].enabled = enabled; self.endPickers[index].enabled = enabled;
+    }
+}
+- (void)configureSchedule:(id)sender {
+    if (!self.scheduleWindow) {
+        self.scheduleWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,536) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
+        self.scheduleWindow.title = @"通知の予定を設定"; self.scheduleWindow.releasedWhenClosed = NO; [self.scheduleWindow center];
+        ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.scheduleWindow.contentView = background;
+        NSStackView *stack = [self verticalStack:16]; [self.scheduleWindow.contentView addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.leadingAnchor constant:24],
+            [stack.trailingAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.trailingAnchor constant:-24],
+            [stack.topAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.topAnchor constant:24],
+            [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.scheduleWindow.contentView.bottomAnchor constant:-24]
+        ]];
+        [stack addArrangedSubview:[self label:@"通知に使う予定を選んでください" size:18 strong:YES muted:NO]];
+        self.outlookModeButton = [NSButton radioButtonWithTitle:@"Outlookの予定表" target:self action:@selector(chooseScheduleSource:)];
+        self.weeklyModeButton = [NSButton radioButtonWithTitle:@"週間予定（月〜金）" target:self action:@selector(chooseScheduleSource:)];
+        self.outlookModeButton.font = self.weeklyModeButton.font = [NSFont systemFontOfSize:14];
+        NSStackView *modes = [NSStackView stackViewWithViews:@[self.outlookModeButton, self.weeklyModeButton]]; modes.spacing = 24; [stack addArrangedSubview:modes];
+        self.outlookSettingsButton = [self button:@"OutlookのICSリンクを設定" selector:@selector(configure:)]; [self.buttons removeObject:self.outlookSettingsButton];
+        self.outlookSettingsButton.toolTip = @"Outlookの予定表を使う場合、自分のICSリンクを登録します"; [stack addArrangedSubview:self.outlookSettingsButton];
+        NSStackView *weekly = [self verticalStack:12];
+        NSTextField *dayHeader = [self label:@"通知する曜日" size:13 strong:YES muted:YES]; [dayHeader.widthAnchor constraintEqualToConstant:96].active = YES;
+        NSTextField *startHeader = [self label:@"出勤予定" size:13 strong:YES muted:YES]; [startHeader.widthAnchor constraintEqualToConstant:128].active = YES;
+        NSTextField *endHeader = [self label:@"退勤予定" size:13 strong:YES muted:YES]; [endHeader.widthAnchor constraintEqualToConstant:128].active = YES;
+        NSStackView *columns = [NSStackView stackViewWithViews:@[dayHeader, startHeader, endHeader]]; columns.spacing = 24; [weekly addArrangedSubview:columns];
+        NSMutableArray *days = [NSMutableArray array], *starts = [NSMutableArray array], *ends = [NSMutableArray array];
+        for (NSString *name in @[@"月曜日", @"火曜日", @"水曜日", @"木曜日", @"金曜日"]) {
+            NSButton *day = [NSButton checkboxWithTitle:name target:self action:@selector(updateScheduleControls:)]; day.font = [NSFont systemFontOfSize:14]; day.state = NSControlStateValueOn;
+            [day.widthAnchor constraintEqualToConstant:96].active = YES;
+            NSDatePicker *start = [self schedulePicker:@"09:45"], *end = [self schedulePicker:@"18:45"];
+            start.accessibilityLabel = [name stringByAppendingString:@"の出勤予定時刻"]; end.accessibilityLabel = [name stringByAppendingString:@"の退勤予定時刻"];
+            NSStackView *row = [NSStackView stackViewWithViews:@[day, start, end]]; row.spacing = 24; row.alignment = NSLayoutAttributeCenterY;
+            [weekly addArrangedSubview:row]; [days addObject:day]; [starts addObject:start]; [ends addObject:end];
+        }
+        self.weekdayButtons = days; self.startPickers = starts; self.endPickers = ends;
+        NSView *card = [self card:weekly]; [stack addArrangedSubview:card]; [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        [stack addArrangedSubview:[self label:@"出勤は予定の5分前、退勤は予定時刻に通知します。\n週間予定は日本時間で、チェックした曜日に毎週繰り返します。" size:12 strong:NO muted:YES]];
+        self.scheduleSaveButton = [self button:@"保存して開始" selector:@selector(saveSchedule:)]; [self.buttons removeObject:self.scheduleSaveButton];
+        [stack addArrangedSubview:self.scheduleSaveButton];
+    }
+    [self.scheduleWindow makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    self.scheduleBusy = YES; [self updateScheduleControls:nil];
+    [self runCommand:@"schedule" input:nil completion:^(BOOL ok, NSString *text) {
+        self.scheduleBusy = NO;
+        NSDictionary *schedule = ok ? [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
+        if ([schedule isKindOfClass:NSDictionary.class]) {
+            BOOL weekly = [schedule[@"mode"] isEqual:@"weekly"];
+            self.outlookModeButton.state = weekly ? NSControlStateValueOff : NSControlStateValueOn; self.weeklyModeButton.state = weekly ? NSControlStateValueOn : NSControlStateValueOff;
+            NSArray *rows = schedule[@"weekdays"];
+            if ([rows isKindOfClass:NSArray.class] && rows.count == 5) for (NSUInteger index = 0; index < 5; index++) {
+                NSDictionary *row = rows[index]; self.weekdayButtons[index].state = [row[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+                self.startPickers[index].dateValue = [[self scheduleTimeFormatter:YES] dateFromString:[@"2001-01-01 " stringByAppendingString:row[@"start"]]];
+                self.endPickers[index].dateValue = [[self scheduleTimeFormatter:YES] dateFromString:[@"2001-01-01 " stringByAppendingString:row[@"end"]]];
+            }
+        } else [self showMessage:ok ? @"予定の設定を読み取れませんでした。" : text];
+        [self updateScheduleControls:nil];
+    }];
+}
+- (void)saveSchedule:(id)sender {
+    NSMutableArray *days = [NSMutableArray array]; NSDateFormatter *formatter = [self scheduleTimeFormatter:NO];
+    for (NSUInteger index = 0; index < 5; index++) [days addObject:@{
+        @"day": @(index + 1), @"enabled": @(self.weekdayButtons[index].state == NSControlStateValueOn),
+        @"start": [formatter stringFromDate:self.startPickers[index].dateValue], @"end": [formatter stringFromDate:self.endPickers[index].dateValue]
+    }];
+    NSDictionary *schedule = @{@"mode": self.weeklyModeButton.state == NSControlStateValueOn ? @"weekly" : @"outlook", @"weekdays": days};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:schedule options:0 error:nil];
+    NSString *temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-schedule-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    int descriptor = open(temporary.fileSystemRepresentation, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    if (descriptor < 0) { [self showMessage:@"予定を保存する準備ができませんでした。"]; return; }
+    const uint8_t *bytes = data.bytes; NSUInteger written = 0;
+    while (written < data.length) { ssize_t count = write(descriptor, bytes + written, data.length - written); if (count <= 0) break; written += (NSUInteger)count; }
+    close(descriptor);
+    if (written != data.length) { unlink(temporary.fileSystemRepresentation); [self showMessage:@"予定を保存できませんでした。"]; return; }
+    self.scheduleBusy = YES; [self updateScheduleControls:nil];
+    [self runCommand:@"configure-schedule" input:temporary completion:^(BOOL ok, NSString *message) {
+        unlink(temporary.fileSystemRepresentation); self.scheduleBusy = NO; [self updateScheduleControls:nil];
+        if (ok) [self.scheduleWindow orderOut:nil];
+        [self showMessage:message]; [self refreshStatus];
     }];
 }
 - (void)toggle:(id)sender {
@@ -351,7 +470,7 @@ static void DrawReminderClock(NSRect bounds) {
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"OutlookのWeb版で、設定 → 予定表 → 共有の予定表 → 予定表の公開を開き、タイトルが見えるICSリンクを取得してください。\n\n「予定表を設定・変更」へ自分のリンクを入力すると、出社・出勤は予定の5分前、退社・退勤は予定時刻に通知します。再通知は10分後・30分後・1時間後・2時間後です。\n\nこの画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"「通知の予定を設定」で、Outlookの予定表か週間予定を選べます。\n\n週間予定では、月〜金それぞれの出勤・退勤時刻と通知する曜日を設定して「保存して開始」を押してください。出勤は5分前、退勤は予定時刻に通知します。\n\nOutlookでは、Web版の設定 → 予定表 → 共有の予定表 → 予定表の公開から、タイトルが見えるICSリンクを取得して設定します。出社・出勤・退社・退勤の予定に対応します。\n\n通知内のKING OF TIMEで打刻できます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n下の打刻画面は実際のKING OF TIMEです。";

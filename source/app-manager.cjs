@@ -4,6 +4,7 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const ical = require('node-ical');
 const { saveConfig } = require('./configure.cjs');
+const { readSchedule, validateSchedule } = require('./weekly-schedule.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
 class UiError extends Error {}
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -38,6 +39,7 @@ function createManager(options = {}) {
   const agentPath = path.join(agents, `${label}.plist`);
   const configPath = path.join(root, 'config.json');
   const prefsPath = path.join(root, 'preferences.json');
+  const schedulePath = path.join(root, 'schedule.json');
   const legacyRoot = path.join(home, 'Library/Application Support/AttendanceReminder');
   const legacyConfig = path.join(home, '.outlook-calendar-sync/config.json');
   const call = options.call || ((command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 20000 }));
@@ -51,8 +53,12 @@ function createManager(options = {}) {
     fs.chmodSync(filename, 0o600);
   }
   const loaded = () => call('/bin/launchctl', ['print', `${domain}/${label}`]).status === 0;
-  const configured = () => {
+  const outlookConfigured = () => {
     try { const value = new URL(json(configPath, {}).icsUrl); return value.protocol === 'https:' && !value.username && !value.password; }
+    catch { return false; }
+  };
+  const configured = () => {
+    try { return readSchedule(root).mode === 'weekly' || outlookConfigured(); }
     catch { return false; }
   };
   const enabled = () => configured() && json(prefsPath, {}).enabled !== false && loaded();
@@ -81,7 +87,7 @@ function createManager(options = {}) {
     call('/usr/bin/pkill', ['-f', `^${processDirectory(legacyRoot)}/[^/]+[.]app/Contents/MacOS/(applet|launcher)( |$)`]);
   }
   function start() {
-    if (!configured()) throw new UiError('先に自分のOutlook予定表を設定してください。');
+    if (!configured()) throw new UiError('先にOutlookまたは月〜金の週間予定を設定してください。');
     if (!['arm64', 'x64'].includes(arch)) throw new UiError('このMacの種類には対応していません。');
     ensureRoot();
     fs.mkdirSync(agents, { recursive: true, mode: 0o700 });
@@ -137,7 +143,28 @@ function createManager(options = {}) {
     const changed = json(configPath, {}).icsUrl !== raw;
     saveConfig(raw, root);
     if (changed) fs.rmSync(path.join(root, 'calendar-state.json'), { force: true });
+    const previousSchedule = readSchedule(root);
+    atomic(schedulePath, JSON.stringify({ ...previousSchedule, mode: 'outlook' }));
     return start();
+  }
+  function configureSchedule(inputFile) {
+    let value;
+    try { value = JSON.parse(fs.readFileSync(inputFile, 'utf8')); }
+    catch { throw new UiError('週間予定を読み取れませんでした。もう一度設定してください。'); }
+    finally { if (inputFile) fs.rmSync(inputFile, { force: true }); }
+    let schedule;
+    try { schedule = validateSchedule(value); }
+    catch (error) { throw new UiError(error.message); }
+    if (schedule.mode === 'outlook' && !outlookConfigured()) throw new UiError('先に「OutlookのICSリンクを設定」から予定表を登録してください。');
+    const previous = fs.existsSync(schedulePath) ? fs.readFileSync(schedulePath) : null;
+    atomic(schedulePath, JSON.stringify(schedule));
+    try { start(); }
+    catch (error) {
+      if (previous) atomic(schedulePath, previous);
+      else fs.rmSync(schedulePath, { force: true });
+      throw error;
+    }
+    return schedule.mode === 'weekly' ? '月〜金の週間予定で通知を開始しました。出勤は5分前、退勤は予定時刻にお知らせします。' : 'Outlookの予定表で通知を開始しました。';
   }
   function migrate() {
     if (!configured()) {
@@ -155,10 +182,11 @@ function createManager(options = {}) {
     if (!loaded() || !fs.existsSync(agentPath) || fs.readFileSync(agentPath, 'utf8') !== wanted) start();
   }
   function status() {
-    if (!configured()) return '予定表：未設定\n自分のOutlook予定表を設定してください。';
-    return enabled() ? '通知：有効\n出社・出勤は5分前、退社・退勤は予定時刻にお知らせします。\nこの画面を閉じても通知は続きます。' : '通知：停止中\n「通知を再開」から再開できます。';
+    if (!configured()) return '予定表：未設定\nOutlookまたは月〜金の週間予定を設定してください。';
+    const source = readSchedule(root).mode === 'weekly' ? '通知元：週間予定（月〜金）' : '通知元：Outlookの予定表';
+    return enabled() ? `通知：有効\n${source}\n出勤は5分前、退勤は予定時刻にお知らせします。\nこの画面を閉じても通知は続きます。` : `通知：停止中\n${source}\n「通知を再開」から再開できます。`;
   }
-  return { root, bundle, configured, enabled, start, stop, configure, migrate, ensure, status,
+  return { root, bundle, configured, enabled, start, stop, configure, configureSchedule, schedule: () => readSchedule(root), migrate, ensure, status,
     canMigrate: () => !configured() && typeof json(legacyConfig, {}).icsUrl === 'string' && fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs')) };
 }
 module.exports = { createManager, makeAgent, UiError };
@@ -172,6 +200,8 @@ if (require.main === module) {
     else if (command === 'agent-preview') console.log(makeAgent(manager.bundle, manager.root, process.arch, process.getuid()));
     else if (['status', 'start', 'stop', 'migrate', 'ensure'].includes(command)) { const result = manager[command](); if (result) console.log(result); }
     else if (command === 'configure') console.log(await manager.configure(process.argv[3]));
+    else if (command === 'schedule') console.log(JSON.stringify(manager.schedule()));
+    else if (command === 'configure-schedule') console.log(manager.configureSchedule(process.argv[3]));
     else throw new UiError('この操作には対応していません。');
   })().catch(error => { console.error(error instanceof UiError ? error.message : '設定を変更できませんでした。もう一度お試しください。'); process.exitCode = 1; });
 }

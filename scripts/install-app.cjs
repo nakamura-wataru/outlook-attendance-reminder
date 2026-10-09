@@ -64,7 +64,7 @@ function buildApp(app, runtime, arch) {
   const resources = path.join(app, 'Contents/Resources');
   const scripts = path.join(resources, 'app');
   fs.mkdirSync(scripts);
-  for (const file of ['calendar-core.cjs', 'calendar-reminder.cjs', 'app-manager.cjs', 'configure.cjs', 'test-dialog.applescript', 'THIRD_PARTY_NOTICES.md']) fs.copyFileSync(path.join(project, 'source', file), path.join(scripts, file));
+  for (const file of ['calendar-core.cjs', 'calendar-reminder.cjs', 'weekly-schedule.cjs', 'app-manager.cjs', 'configure.cjs', 'test-dialog.applescript', 'THIRD_PARTY_NOTICES.md']) fs.copyFileSync(path.join(project, 'source', file), path.join(scripts, file));
   fs.copyFileSync(path.join(project, 'package.json'), path.join(scripts, 'package.json'));
   fs.cpSync(path.join(project, 'node_modules'), path.join(scripts, 'node_modules'), { recursive: true });
   fs.copyFileSync(path.join(project, 'source/launch-manager.sh'), path.join(resources, 'launch-manager.sh'));
@@ -104,7 +104,7 @@ function main() {
     assertOwnedApp(target);
     replaceApp(app, target);
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
-  console.log(`インストール完了：${target}\n「打刻リマインダー」を開き、自分のOutlook予定表を設定してください。`);
+  console.log(`インストール完了：${target}\n「打刻リマインダー」を開き、Outlookまたは月〜金の週間予定を設定してください。`);
   if (!args.includes('--no-open') && process.env.ATTENDANCE_NO_OPEN !== '1') command('/usr/bin/open', [target]);
 }
 module.exports = { assertOwnedApp, replaceApp, makeBundle };

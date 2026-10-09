@@ -5,6 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const ical = require('node-ical');
 const { targetsFromCalendar, dueTargets, reminderMessage } = require('./calendar-core.cjs');
+const { readSchedule, weeklyTargets } = require('./weekly-schedule.cjs');
 
 const root = process.env.ATTENDANCE_REMINDER_ROOT || path.join(os.homedir(), 'Library/Application Support/OutlookAttendanceReminder');
 const statePath = path.join(root, 'calendar-state.json');
@@ -28,6 +29,18 @@ async function fetchTargets(now) {
   return targetsFromCalendar(data, ical, now);
 }
 
+async function refreshTargets(state, schedule, now, fetchCalendar = fetchTargets) {
+  if (schedule.mode === 'weekly') return { state: { ...state, source: 'weekly', targets: weeklyTargets(schedule, now), fetchedAt: now.getTime() } };
+  // Never use weekly targets as a fallback after switching to Outlook.
+  const cached = state.source && state.source !== 'outlook' ? { ...state, targets: [], fetchedAt: 0, source: 'outlook' } : state;
+  if (now.getTime() - cached.fetchedAt < syncPeriod) return { state: cached };
+  try {
+    return { state: { ...cached, targets: await fetchCalendar(now), fetchedAt: now.getTime(), source: 'outlook' }, synced: true };
+  } catch (error) {
+    return { state: cached, error, stale: now.getTime() - cached.fetchedAt > maxCacheAge };
+  }
+}
+
 function preview(targets) {
   const format = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', dateStyle: 'short', timeStyle: 'short' });
   console.log(JSON.stringify({
@@ -42,8 +55,12 @@ function preview(targets) {
 
 async function main() {
   const now = new Date();
+  if (!process.argv.includes('--preview') && !process.argv.includes('--test-dialog')) {
+    try { if (JSON.parse(fs.readFileSync(path.join(root, 'preferences.json'), 'utf8')).enabled === false) return; } catch { /* Legacy setups have no preferences. */ }
+  }
+  const schedule = readSchedule(root);
   if (process.argv.includes('--preview')) {
-    const targets = await fetchTargets(now);
+    const targets = schedule.mode === 'weekly' ? weeklyTargets(schedule, now) : await fetchTargets(now);
     preview(targets);
     return;
   }
@@ -61,19 +78,13 @@ async function main() {
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('通知履歴を読み込めません。予定を再取得します。');
   }
-  if (now.getTime() - state.fetchedAt >= syncPeriod) {
-    try {
-      state.targets = await fetchTargets(now);
-      state.fetchedAt = Date.now();
-      console.log(`[${new Date().toISOString()}] 出社・退社予定を同期しました。対象${state.targets.length}件。`);
-    } catch (error) {
-      // Never log the ICS URL, credential-bearing URLs, or a fetch stack trace.
-      console.error(`[${new Date().toISOString()}] 予定を取得できません（${error.name}）。次の実行で再試行します。`);
-      if (Date.now() - state.fetchedAt > maxCacheAge) {
-        process.exitCode = 1;
-        return;
-      }
-    }
+  const result = await refreshTargets(state, schedule, now);
+  state = result.state;
+  if (result.synced) console.log(`[${new Date().toISOString()}] 出社・退社予定を同期しました。対象${state.targets.length}件。`);
+  if (result.error) {
+    // Never log private URLs or a fetch stack trace.
+    console.error(`[${new Date().toISOString()}] 予定を取得できません（${result.error.name}）。次の実行で再試行します。`);
+    if (result.stale) { process.exitCode = 1; return; }
   }
   const current = new Date();
   for (const target of dueTargets(state.targets, state.notified, current)) {
@@ -94,7 +105,8 @@ async function main() {
   writeAtomic(statePath, JSON.stringify(state, null, 2));
 }
 
-main().catch(error => {
+module.exports = { refreshTargets };
+if (require.main === module) main().catch(error => {
   console.error(`リマインダーを実行できません（${error.name}）。`);
   process.exitCode = 1;
 });
