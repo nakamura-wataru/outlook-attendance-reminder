@@ -156,7 +156,7 @@ function createManager(options = {}) {
   }
   function status() {
     if (!configured()) return '予定表：未設定\n自分のOutlook予定表を設定してください。';
-    return enabled() ? '通知：有効\n出社・退社予定の5分前にお知らせします。\nこの画面を閉じても通知は続きます。' : '通知：停止中\n「通知を再開」から再開できます。';
+    return enabled() ? '通知：有効\n出社・出勤は5分前、退社・退勤は予定時刻にお知らせします。\nこの画面を閉じても通知は続きます。' : '通知：停止中\n「通知を再開」から再開できます。';
   }
   return { root, bundle, configured, enabled, start, stop, configure, migrate, ensure, status,
     canMigrate: () => !configured() && typeof json(legacyConfig, {}).icsUrl === 'string' && fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs')) };

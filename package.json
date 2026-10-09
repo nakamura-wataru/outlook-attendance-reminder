@@ -1,8 +1,8 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "private": true,
-  "description": "Outlookの出社・退社予定から打刻を促すMacアプリ",
+  "description": "Outlookの出社・出勤・退社・退勤予定から打刻を促すMacアプリ",
   "engines": { "node": ">=22" },
   "os": ["darwin"],
   "dependencies": { "node-ical": "0.27.1" },

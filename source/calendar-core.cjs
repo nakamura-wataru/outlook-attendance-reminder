@@ -8,8 +8,8 @@ function text(value) {
 
 function attendanceKind(subject) {
   const normalized = text(subject).normalize('NFKC').replace(/[\s【】\[\]()]/gu, '');
-  const match = /^(?:\d{1,2}:\d{2})?(出社|退社)(?:\d{1,2}:\d{2})?$/u.exec(normalized);
-  return match ? (match[1] === '出社' ? 'start' : 'end') : null;
+  const match = /^(?:\d{1,2}:\d{2})?(出社|出勤|退社|退勤)(?:\d{1,2}:\d{2})?$/u.exec(normalized);
+  return match ? (['出社', '出勤'].includes(match[1]) ? 'start' : 'end') : null;
 }
 
 function targetsFromCalendar(data, ical, now = new Date()) {
@@ -28,7 +28,7 @@ function targetsFromCalendar(data, ical, now = new Date()) {
         planned = instance.end;
       }
       if (!Number.isFinite(planned.getTime()) || timeFormat.format(planned) === '00:00:00') continue;
-      const due = new Date(planned.getTime() - 5 * 60000);
+      const due = new Date(planned.getTime() - (kind === 'start' ? 5 * 60000 : 0));
       if (planned < from || planned > to) continue;
       const id = createHash('sha256').update(`${event.uid}\n${kind}\n${planned.toISOString()}`).digest('hex');
       targets.set(id, { id, kind, subject: text(instance.summary), plannedAt: planned.toISOString(), dueAt: due.toISOString() });
@@ -38,15 +38,23 @@ function targetsFromCalendar(data, ical, now = new Date()) {
 }
 
 function dueTargets(targets, notified, now = new Date()) {
-  return targets.filter(target => !notified[target.id] && new Date(target.dueAt) <= now && new Date(target.plannedAt) > now);
+  return targets.filter(target => {
+    const planned = new Date(target.plannedAt).getTime();
+    // Use the planned departure time even when the cache was made by an older
+    // version. Allow five minutes for the minute-based worker or a brief sleep.
+    const due = target.kind === 'end' ? planned : new Date(target.dueAt).getTime();
+    const expires = planned + (target.kind === 'end' ? 5 * 60000 : 0);
+    return !notified[target.id] && due <= now.getTime() && now.getTime() < expires;
+  });
 }
 
 function reminderMessage(target) {
-  const kind = target.kind === 'start' ? '出社' : '退社';
+  const kind = target.kind === 'start' ? '出勤' : '退勤';
   const time = timeFormat.format(new Date(target.plannedAt)).slice(0, 5);
   const date = dateFormat.format(new Date(target.plannedAt));
   const action = target.kind === 'start' ? '出勤' : '退勤';
-  return `${date} ${kind}予定 ${time} の5分前です。\nKING OF TIMEで${action}の打刻を確認してください。\n${target.kind === 'end' ? 'まだ仕事中なら再通知までの時間を選べます。' : '打刻は実際に業務を開始する時刻に行ってください。'}`;
+  const timing = target.kind === 'start' ? 'の5分前です。' : 'の時刻になりました。';
+  return `${date} ${kind}予定 ${time} ${timing}\nKING OF TIMEで${action}の打刻を確認してください。\n${target.kind === 'end' ? 'まだ仕事中なら再通知までの時間を選べます。' : '打刻は実際に業務を開始する時刻に行ってください。'}`;
 }
 
 module.exports = { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage };

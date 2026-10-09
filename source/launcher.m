@@ -114,7 +114,7 @@
     [self runCommand:@"migrate" input:nil completion:^(BOOL ok, NSString *message) { [self showMessage:message]; [self refreshStatus]; }];
 }
 - (void)help:(id)sender {
-    [self showMessage:@"OutlookのWeb版で、設定 → 予定表 → 共有の予定表 → 予定表の公開を開き、タイトルが見えるICSリンクを取得してください。\n\n「予定表を設定・変更」へ自分のリンクを入力すると、出社・退社予定の5分前に通知します。再通知は10分後・30分後・1時間後・2時間後です。\n\nこの画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"OutlookのWeb版で、設定 → 予定表 → 共有の予定表 → 予定表の公開を開き、タイトルが見えるICSリンクを取得してください。\n\n「予定表を設定・変更」へ自分のリンクを入力すると、出社・出勤は予定の5分前、退社・退勤は予定時刻に通知します。再通知は10分後・30分後・1時間後・2時間後です。\n\nこの画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSAlert *)reminderAlert:(BOOL)test {
     NSAlert *alert = [[NSAlert alloc] init];
@@ -124,7 +124,10 @@
         NSString *root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder"];
         NSString *filename = [NSString stringWithFormat:@"calendar-%@.txt", self.kind];
         message = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:filename] encoding:NSUTF8StringEncoding error:nil] ?: @"KING OF TIMEで打刻を確認してください。";
-        if (self.repeated) message = [message stringByReplacingOccurrencesOfString:@"の5分前です。" withString:@"の打刻リマインダーです。"];
+        if (self.repeated) {
+            message = [message stringByReplacingOccurrencesOfString:@"の5分前です。" withString:@"の打刻リマインダーです。"];
+            message = [message stringByReplacingOccurrencesOfString:@"の時刻になりました。" withString:@"の打刻リマインダーです。"];
+        }
     }
     alert.informativeText = [message stringByAppendingString:@"\n\n再通知までの時間を選んでください。"];
     NSPopUpButton *choice = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,220,28) pullsDown:NO];
