@@ -9,7 +9,7 @@ if [[ ! -x "$reminder_clang" ]]; then
 fi
 reminder_output="$(/usr/bin/mktemp "$reminder_project/native/.launcher.XXXXXX")"
 trap '/bin/rm -f "$reminder_output"' EXIT
-"$reminder_clang" -isysroot "$reminder_sdk" -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -fobjc-arc -framework Cocoa -Wall -Wextra -Werror -Wno-unused-parameter "$reminder_project/source/launcher.m" -o "$reminder_output"
+"$reminder_clang" -isysroot "$reminder_sdk" -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -fobjc-arc -framework Cocoa -framework WebKit -Wall -Wextra -Werror -Wno-unused-parameter "$reminder_project/source/launcher.m" -o "$reminder_output"
 /bin/chmod 755 "$reminder_output"
 /usr/bin/codesign --force --sign - "$reminder_output"
 /bin/mv "$reminder_output" "$reminder_project/native/launcher"

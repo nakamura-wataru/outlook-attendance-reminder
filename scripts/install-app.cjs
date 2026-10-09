@@ -50,6 +50,7 @@ function makeBundle(app, identifier, name, version, launcher) {
 <key>CFBundleShortVersionString</key><string>${xml(version)}</string>
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSLocationUsageDescription</key><string>KING OF TIMEの公式打刻画面で、勤務先が位置情報を必要とする場合に使用します。</string>
 </dict></plist>\n`);
 }
 function buildApp(app, runtime, arch) {
