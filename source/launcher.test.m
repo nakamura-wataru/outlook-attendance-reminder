@@ -22,6 +22,19 @@
 @implementation NotificationProbe
 - (void)showNotification { self.displays++; }
 @end
+@interface RecorderIntentProbe : OwnerProbe
+@property NSUInteger loads;
+@end
+@implementation RecorderIntentProbe
+- (void)loadRecorder { self.loads++; }
+@end
+@interface RecorderSurfaceProbe : NSObject
+@property BOOL hidden;
+@property NSUInteger stops;
+@end
+@implementation RecorderSurfaceProbe
+- (void)stopLoading { self.stops++; }
+@end
 @interface WindowProbe : NSObject
 @property NSUInteger hides;
 @end
@@ -86,6 +99,19 @@ int main(void) {
         }
         puts("PASS: weekly saves preserve boolean selections and valid times");
         WindowProbe *window = [[WindowProbe alloc] init];
+        RecorderIntentProbe *intent = [[RecorderIntentProbe alloc] init]; intent.notificationMode = YES; intent.allowed = YES;
+        [intent showRecorder]; Check(intent.loads == 0, @"A closed notification cannot load the recorder");
+        intent.notificationRecorderOpen = YES; [intent showRecorder]; Check(intent.loads == 1, @"The recorder loads only after being opened");
+        puts("PASS: notification recorder requires an explicit open action");
+        RecorderSurfaceProbe *surface = [[RecorderSurfaceProbe alloc] init], *web = [[RecorderSurfaceProbe alloc] init];
+        intent.notificationRecorderPanel = (NSStackView *)surface; intent.recorderWebView = (WKWebView *)web; intent.window = (NSWindow *)window;
+        [intent snoozeNotification:nil];
+        Check(!intent.notificationRecorderOpen && surface.hidden && web.stops == 1 && intent.reminderTimer.valid, @"Snoozing hides the recorder and preserves the reminder timer");
+        intent.notificationRecorderOpen = YES; surface.hidden = NO;
+        NSTimer *intentTimer = intent.reminderTimer; [intent closeNotification:nil];
+        Check(!intent.notificationRecorderOpen && surface.hidden && web.stops == 2 && !intentTimer.valid, @"Closing resets the recorder and cancels the pending reminder");
+        puts("PASS: snooze and close reset the notification recorder");
+        window.hides = 0;
         NSApplication *application = (NSApplication *)[[NSObject alloc] init];
         RoutingProbe *routing = [[RoutingProbe alloc] init]; routing.received = [NSMutableArray array]; routing.window = (NSWindow *)window;
         [routing application:application openURLs:@[

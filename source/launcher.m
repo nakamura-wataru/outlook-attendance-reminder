@@ -84,6 +84,11 @@ static void DrawReminderClock(NSRect bounds) {
 @property NSStackView *scheduleLayout;
 @property NSView *weeklySettingsCard;
 @property NSTextField *scheduleHint;
+@property NSStackView *notificationLayout;
+@property NSStackView *notificationRecorderPanel;
+@property NSButton *notificationRecorderButton;
+@property NSLayoutConstraint *notificationFillConstraint;
+@property BOOL notificationRecorderOpen;
 @end
 
 @implementation ReminderController
@@ -208,7 +213,7 @@ static void DrawReminderClock(NSRect bounds) {
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
     NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
     self.migrationButton = [self button:@"既存の設定を引き継ぐ" selector:@selector(migrate:)]; self.migrationButton.hidden = YES; [stack addArrangedSubview:self.migrationButton];
-    [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n通知の中にKING OF TIMEの打刻画面が開きます。" size:12 strong:NO muted:YES]];
+    [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n通知の「打刻画面を開く」からKING OF TIMEを表示します。" size:12 strong:NO muted:YES]];
     [NSApp setApplicationIconImage:[self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
     [self runCommand:@"ensure" input:nil completion:^(BOOL ok, NSString *message) { [self refreshStatus]; }];
@@ -429,7 +434,7 @@ static void DrawReminderClock(NSRect bounds) {
     [self.recorderWebView loadRequest:[NSURLRequest requestWithURL:[self recorderURL]]];
 }
 - (void)showRecorder {
-    if (self.notificationMode) { [self loadRecorder]; return; }
+    if (self.notificationMode) { if (self.notificationRecorderOpen) [self loadRecorder]; return; }
     if (!self.recorderWindow) {
         self.recorderWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,600,720) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
         self.recorderWindow.title = @"KING OF TIME · Myレコーダー"; self.recorderWindow.releasedWhenClosed = NO;
@@ -482,10 +487,10 @@ static void DrawReminderClock(NSRect bounds) {
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"「通知の予定を設定」で、Outlookの予定表か週間予定を選べます。\n\n週間予定では、月〜金それぞれの出勤・退勤時刻と通知する曜日を設定して「保存して開始」を押してください。出勤は5分前、退勤は予定時刻に通知します。\n\nOutlookでは、Web版の設定 → 予定表 → 共有の予定表 → 予定表の公開から、タイトルが見えるICSリンクを取得して設定します。出社・出勤・退社・退勤の予定に対応します。\n\n通知内のKING OF TIMEで打刻できます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"「通知の予定を設定」で、Outlookの予定表か週間予定を選べます。\n\n週間予定では、月〜金それぞれの出勤・退勤時刻と通知する曜日を設定して「保存して開始」を押してください。出勤は5分前、退勤は予定時刻に通知します。\n\nOutlookでは、Web版の設定 → 予定表 → 共有の予定表 → 予定表の公開から、タイトルが見えるICSリンクを取得して設定します。出社・出勤・退社・退勤の予定に対応します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSString *)reminderMessage {
-    NSString *message = @"表示テストです。再通知は予約しません。\n下の打刻画面は実際のKING OF TIMEです。";
+    NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";
     if (!self.testMode) {
         NSString *root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder"];
         NSString *filename = [NSString stringWithFormat:@"calendar-%@.txt", self.kind];
@@ -520,12 +525,44 @@ static void DrawReminderClock(NSRect bounds) {
     [controller showNotification];
 }
 - (void)testReminder:(id)sender { [self presentReminderKind:@"end" test:YES]; }
+- (void)updateNotificationRecorderLayout {
+    self.notificationRecorderPanel.hidden = !self.notificationRecorderOpen;
+    self.notificationRecorderButton.title = self.notificationRecorderOpen ? @"打刻画面を閉じる" : @"打刻画面を開く";
+    self.notificationRecorderButton.toolTip = self.notificationRecorderOpen ? @"打刻画面を隠し、小さな通知に戻します" : @"KING OF TIMEを表示します。出勤・退勤は開いた画面で選びます";
+    self.notificationFillConstraint.active = self.notificationRecorderOpen;
+    if (!self.notificationLayout) return;
+    [self.window.contentView layoutSubtreeIfNeeded];
+    NSSize size = self.notificationRecorderOpen ? NSMakeSize(640, 800) : NSMakeSize(560, ceil(self.notificationLayout.fittingSize.height + 32));
+    self.window.contentMinSize = self.notificationRecorderOpen ? NSMakeSize(580, 620) : NSMakeSize(560, size.height);
+    NSRect frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, size.width, size.height)];
+    frame.origin = NSMakePoint(NSMinX(self.window.frame), NSMaxY(self.window.frame) - frame.size.height);
+    NSRect visible = (self.window.screen ?: NSScreen.mainScreen).visibleFrame;
+    frame.origin.x = MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - frame.size.width));
+    frame.origin.y = MAX(NSMinY(visible), MIN(frame.origin.y, NSMaxY(visible) - frame.size.height));
+    [self.window setFrame:frame display:self.window.visible];
+}
+- (void)hideNotificationRecorder {
+    self.notificationRecorderOpen = NO;
+    [self.recorderWebView stopLoading];
+    [self updateNotificationRecorderLayout];
+}
+- (void)toggleNotificationRecorder:(id)sender {
+    if (self.notificationRecorderOpen) { [self hideNotificationRecorder]; return; }
+    if (!self.testMode && ![self remindersEnabled]) { [self closeNotification:nil]; return; }
+    if (!self.notificationRecorderPanel) {
+        self.notificationRecorderPanel = [self recorderPanel:320];
+        [self.notificationLayout insertArrangedSubview:self.notificationRecorderPanel atIndex:2];
+        [self.notificationRecorderPanel.widthAnchor constraintEqualToAnchor:self.notificationLayout.widthAnchor].active = YES;
+    }
+    self.notificationRecorderOpen = YES; [self updateNotificationRecorderLayout];
+    [self openRecorder:nil];
+}
 - (void)closeNotification:(id)sender {
     [self.reminderTimer invalidate]; self.reminderTimer = nil;
     [self.enabledTimer invalidate]; self.enabledTimer = nil;
     if (self.window.attachedSheet) [self.window endSheet:self.window.attachedSheet returnCode:NSModalResponseCancel];
-    [self.recorderWebView stopLoading];
     self.showingAlert = NO; [self.window orderOut:nil];
+    [self hideNotificationRecorder];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     if (self.notificationMode) { [self closeNotification:nil]; return NO; }
@@ -543,6 +580,7 @@ static void DrawReminderClock(NSRect bounds) {
     [self.reminderTimer invalidate]; self.repeated = YES;
     self.reminderTimer = [NSTimer scheduledTimerWithTimeInterval:durations[(NSUInteger)MAX(0, MIN(selected, 3))].doubleValue target:self selector:@selector(reminderTimerFired:) userInfo:nil repeats:NO];
     self.showingAlert = NO; [self.window orderOut:nil];
+    [self hideNotificationRecorder];
 }
 - (void)showNotification {
     if (!self.testMode && ![self remindersEnabled]) { [self closeNotification:nil]; return; }
@@ -550,15 +588,16 @@ static void DrawReminderClock(NSRect bounds) {
         self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,640,800) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
         self.window.title = self.testMode ? @"リマインダー表示テスト" : ([self.kind isEqualToString:@"start"] ? @"出勤リマインダー" : @"退勤リマインダー");
         self.window.releasedWhenClosed = NO; self.window.delegate = self;
-        self.window.contentMinSize = NSMakeSize(580, 620); [self.window center];
+        [self.window center];
         ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.window.contentView = background;
-        NSStackView *stack = [self verticalStack:16]; [self.window.contentView addSubview:stack];
+        NSStackView *stack = [self verticalStack:16]; self.notificationLayout = stack; stack.detachesHiddenViews = YES; [self.window.contentView addSubview:stack];
         [NSLayoutConstraint activateConstraints:@[
             [stack.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor constant:16],
             [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-16],
             [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:16],
-            [stack.bottomAnchor constraintEqualToAnchor:self.window.contentView.bottomAnchor constant:-16]
+            [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.window.contentView.bottomAnchor constant:-16]
         ]];
+        self.notificationFillConstraint = [stack.bottomAnchor constraintEqualToAnchor:self.window.contentView.bottomAnchor constant:-16];
         ReminderClock *clock = [[ReminderClock alloc] init]; clock.translatesAutoresizingMaskIntoConstraints = NO;
         clock.accessibilityLabel = @"笑顔の時計"; clock.accessibilityRole = NSAccessibilityImageRole;
         [NSLayoutConstraint activateConstraints:@[[clock.widthAnchor constraintEqualToConstant:48], [clock.heightAnchor constraintEqualToConstant:48]]];
@@ -568,7 +607,8 @@ static void DrawReminderClock(NSRect bounds) {
         NSStackView *header = [NSStackView stackViewWithViews:@[clock, text]]; header.spacing = 16; header.alignment = NSLayoutAttributeTop;
         [self.reminderLabel.widthAnchor constraintEqualToAnchor:text.widthAnchor].active = YES;
         NSView *card = [self card:header]; [stack addArrangedSubview:card]; [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-        NSStackView *panel = [self recorderPanel:320]; [stack addArrangedSubview:panel]; [panel.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        self.notificationRecorderButton = [self button:@"打刻画面を開く" selector:@selector(toggleNotificationRecorder:)];
+        [stack addArrangedSubview:self.notificationRecorderButton];
         self.snoozeChoice = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; self.snoozeChoice.translatesAutoresizingMaskIntoConstraints = NO;
         [self.snoozeChoice addItemsWithTitles:@[@"10分後", @"30分後", @"1時間後", @"2時間後"]];
         self.snoozeChoice.accessibilityLabel = @"再通知までの時間"; self.snoozeChoice.toolTip = @"まだ仕事中なら、次の通知までの時間を選べます";
@@ -579,13 +619,11 @@ static void DrawReminderClock(NSRect bounds) {
         footer.spacing = 12; footer.alignment = NSLayoutAttributeCenterY; [stack addArrangedSubview:footer];
     }
     self.reminderLabel.stringValue = [self reminderMessage];
+    [self hideNotificationRecorder];
     [self.snoozeChoice selectItemAtIndex:0];
+    [self.window makeFirstResponder:self.snoozeChoice];
     self.showingAlert = YES; [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    if (!self.recorderWebView.URL || !self.repeated) {
-        if ([[self recorderPreferences] stringForKey:@"server"]) [self loadRecorder];
-        else [self configureRecorder:nil];
-    }
     if (!self.testMode && !self.enabledTimer) self.enabledTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(checkEnabled:) userInfo:nil repeats:YES];
 }
 - (void)reminderTimerFired:(NSTimer *)timer { self.reminderTimer = nil; [self showNotification]; }
