@@ -49,7 +49,7 @@ static void DrawReminderClock(NSRect bounds) {
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self setNeedsDisplay:YES]; }
 @end
 
-@interface ReminderController : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
+@interface ReminderController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
 @property NSWindow *window;
 @property NSTextField *statusLabel;
 @property NSTextField *statusBadge;
@@ -61,6 +61,14 @@ static void DrawReminderClock(NSRect bounds) {
 @property NSTimer *reminderTimer;
 @property BOOL repeated;
 @property BOOL showingAlert;
+@property BOOL testMode;
+@property BOOL launching;
+@property NSMutableArray<NSString *> *pendingKinds;
+@property (weak) ReminderController *owner;
+@property NSMutableDictionary<NSString *, ReminderController *> *notifications;
+@property NSTimer *enabledTimer;
+@property NSTextField *reminderLabel;
+@property NSPopUpButton *snoozeChoice;
 @property NSWindow *recorderWindow;
 @property WKWebView *recorderWebView;
 @property NSTextField *recorderStatus;
@@ -154,7 +162,7 @@ static void DrawReminderClock(NSRect bounds) {
 - (void)showManager {
     self.buttons = [NSMutableArray array];
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,620) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"打刻リマインダー"; [self.window center];
+    self.window.title = @"打刻リマインダー"; self.window.releasedWhenClosed = NO; [self.window center];
     ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.window.contentView = background;
     NSStackView *stack = [self verticalStack:16];
     [self.window.contentView addSubview:stack];
@@ -182,16 +190,16 @@ static void DrawReminderClock(NSRect bounds) {
     schedule.spacing = 16; schedule.distribution = NSStackViewDistributionFillEqually; schedule.alignment = NSLayoutAttributeTop;
     [stack addArrangedSubview:schedule]; [schedule.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     NSButton *configure = [self button:@"予定表を設定・変更" selector:@selector(configure:)]; configure.toolTip = @"自分のOutlook予定表のICSリンクを登録します";
-    NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知の表示を確認します。実際の打刻や再通知は行いません";
+    NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知内のKING OF TIMEと再通知の選択肢を確認します。再通知は予約しません";
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
     NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
     self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"通知の停止・再開は、Macを再起動しても維持されます";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
     NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
     self.migrationButton = [self button:@"既存の設定を引き継ぐ" selector:@selector(migrate:)]; self.migrationButton.hidden = YES; [stack addArrangedSubview:self.migrationButton];
-    [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n「KING OF TIMEで打刻」から公式画面を開けます。" size:12 strong:NO muted:YES]];
+    [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n通知の中にKING OF TIMEの打刻画面が開きます。" size:12 strong:NO muted:YES]];
     [NSApp setApplicationIconImage:[self clockImage]];
-    [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
     [self runCommand:@"ensure" input:nil completion:^(BOOL ok, NSString *message) { [self refreshStatus]; }];
 }
 - (void)configure:(id)sender {
@@ -219,7 +227,10 @@ static void DrawReminderClock(NSRect bounds) {
 }
 - (void)toggle:(id)sender {
     NSString *command = [self.toggleButton.title isEqualToString:@"通知を停止"] ? @"stop" : @"start";
-    [self runCommand:command input:nil completion:^(BOOL ok, NSString *message) { [self showMessage:message]; [self refreshStatus]; }];
+    [self runCommand:command input:nil completion:^(BOOL ok, NSString *message) {
+        if (ok && [command isEqualToString:@"stop"]) for (ReminderController *notification in self.notifications.allValues) [notification closeNotification:nil];
+        [self showMessage:message]; [self refreshStatus];
+    }];
 }
 - (void)migrate:(id)sender {
     [self runCommand:@"migrate" input:nil completion:^(BOOL ok, NSString *message) { [self showMessage:message]; [self refreshStatus]; }];
@@ -246,7 +257,7 @@ static void DrawReminderClock(NSRect bounds) {
     [auth selectItemAtIndex:[prefs boolForKey:@"saml"] ? 1 : 0]; auth.accessibilityLabel = @"ログイン方式";
     [fields addArrangedSubview:server]; [fields addArrangedSubview:auth]; alert.accessoryView = fields;
     [alert addButtonWithTitle:@"保存して開く"]; [alert addButtonWithTitle:@"キャンセル"];
-    NSWindow *parent = self.recorderWindow.visible ? self.recorderWindow : self.window;
+    NSWindow *parent = self.recorderWebView.window ?: self.window;
     [alert beginSheetModalForWindow:parent completionHandler:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         [prefs setObject:@[@"s2", @"s3", @"s4"][(NSUInteger)server.indexOfSelectedItem] forKey:@"server"];
@@ -258,7 +269,36 @@ static void DrawReminderClock(NSRect bounds) {
     if (![[self recorderPreferences] stringForKey:@"server"]) [self configureRecorder:sender];
     else [self showRecorder];
 }
+- (NSStackView *)recorderPanel:(CGFloat)minimumHeight {
+    NSStackView *panel = [self verticalStack:12];
+    self.recorderStatus = [self label:@"Myレコーダーを開いています…" size:13 strong:NO muted:YES];
+    [panel addArrangedSubview:self.recorderStatus];
+    [self.recorderStatus.widthAnchor constraintEqualToAnchor:panel.widthAnchor].active = YES;
+    NSButton *reload = [self button:@"再読み込み" selector:@selector(reloadRecorder:)]; reload.toolTip = @"公式の打刻画面を読み込み直します";
+    NSButton *settings = [self button:@"接続設定" selector:@selector(configureRecorder:)]; settings.toolTip = @"KING OF TIMEのサーバーとログイン方式を選びます";
+    NSButton *browser = [self button:@"ブラウザで開く" selector:@selector(openRecorderInBrowser:)]; browser.toolTip = @"公式Myレコーダーを既定のブラウザで開きます";
+    NSStackView *toolbar = [NSStackView stackViewWithViews:@[reload, settings, browser]];
+    toolbar.spacing = 12; [panel addArrangedSubview:toolbar];
+    // All windows live in the main app, so WebKit shares its persistent session.
+    WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+    configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore;
+    self.recorderWebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
+    self.recorderWebView.navigationDelegate = self; self.recorderWebView.UIDelegate = self;
+    self.recorderWebView.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel addArrangedSubview:self.recorderWebView];
+    [self.recorderWebView.widthAnchor constraintEqualToAnchor:panel.widthAnchor].active = YES;
+    [self.recorderWebView.heightAnchor constraintGreaterThanOrEqualToConstant:minimumHeight].active = YES;
+    [self.recorderWebView setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    [self.recorderWebView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    [panel setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    return panel;
+}
+- (void)loadRecorder {
+    self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
+    [self.recorderWebView loadRequest:[NSURLRequest requestWithURL:[self recorderURL]]];
+}
 - (void)showRecorder {
+    if (self.notificationMode) { [self loadRecorder]; return; }
     if (!self.recorderWindow) {
         self.recorderWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,600,720) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
         self.recorderWindow.title = @"KING OF TIME · Myレコーダー"; self.recorderWindow.releasedWhenClosed = NO;
@@ -270,26 +310,11 @@ static void DrawReminderClock(NSRect bounds) {
             [stack.topAnchor constraintEqualToAnchor:self.recorderWindow.contentView.topAnchor constant:16],
             [stack.bottomAnchor constraintEqualToAnchor:self.recorderWindow.contentView.bottomAnchor constant:-16]
         ]];
-        self.recorderStatus = [self label:@"Myレコーダーを開いています…" size:13 strong:NO muted:YES]; [stack addArrangedSubview:self.recorderStatus];
-        [self.recorderStatus.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-        NSStackView *toolbar = [NSStackView stackViewWithViews:@[
-            [self button:@"再読み込み" selector:@selector(reloadRecorder:)],
-            [self button:@"接続設定" selector:@selector(configureRecorder:)],
-            [self button:@"ブラウザで開く" selector:@selector(openRecorderInBrowser:)]]]; toolbar.spacing = 12; [stack addArrangedSubview:toolbar];
-        WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
-        configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore;
-        self.recorderWebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
-        self.recorderWebView.navigationDelegate = self; self.recorderWebView.UIDelegate = self;
-        self.recorderWebView.translatesAutoresizingMaskIntoConstraints = NO;
-        [stack addArrangedSubview:self.recorderWebView];
-        [self.recorderWebView.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-        [self.recorderWebView.heightAnchor constraintGreaterThanOrEqualToConstant:400].active = YES;
-        [self.recorderWebView setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
-        [self.recorderWebView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+        NSStackView *panel = [self recorderPanel:400]; [stack addArrangedSubview:panel];
+        [panel.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     }
     [self.recorderWindow makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
-    self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
-    [self.recorderWebView loadRequest:[NSURLRequest requestWithURL:[self recorderURL]]];
+    [self loadRecorder];
 }
 - (void)reloadRecorder:(id)sender { [self.recorderWebView reload]; }
 - (void)openRecorderInBrowser:(id)sender { [[NSWorkspace sharedWorkspace] openURL:[self recorderURL]]; }
@@ -315,12 +340,12 @@ static void DrawReminderClock(NSRect bounds) {
 }
 - (void)webView:(WKWebView *)webView runJavaScriptAlertPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(void))completionHandler {
     NSAlert *alert = [self websiteDialog:message frame:frame]; [alert addButtonWithTitle:@"OK"];
-    [alert beginSheetModalForWindow:self.recorderWindow completionHandler:^(NSModalResponse response) { completionHandler(); }];
+    [alert beginSheetModalForWindow:webView.window completionHandler:^(NSModalResponse response) { completionHandler(); }];
 }
 - (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(BOOL))completionHandler {
     NSAlert *alert = [self websiteDialog:message frame:frame];
     [alert addButtonWithTitle:@"OK"]; [alert addButtonWithTitle:@"キャンセル"];
-    [alert beginSheetModalForWindow:self.recorderWindow completionHandler:^(NSModalResponse response) { completionHandler(response == NSAlertFirstButtonReturn); }];
+    [alert beginSheetModalForWindow:webView.window completionHandler:^(NSModalResponse response) { completionHandler(response == NSAlertFirstButtonReturn); }];
 }
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
@@ -328,12 +353,9 @@ static void DrawReminderClock(NSRect bounds) {
 - (void)help:(id)sender {
     [self showMessage:@"OutlookのWeb版で、設定 → 予定表 → 共有の予定表 → 予定表の公開を開き、タイトルが見えるICSリンクを取得してください。\n\n「予定表を設定・変更」へ自分のリンクを入力すると、出社・出勤は予定の5分前、退社・退勤は予定時刻に通知します。再通知は10分後・30分後・1時間後・2時間後です。\n\nこの画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
-- (NSAlert *)reminderAlert:(BOOL)test {
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.icon = [self clockImage];
-    alert.messageText = test ? @"リマインダー表示テスト" : @"打刻しましょう！";
-    NSString *message = @"表示テストです。実際の出社・退社予定の通知ではありません。";
-    if (!test) {
+- (NSString *)reminderMessage {
+    NSString *message = @"表示テストです。再通知は予約しません。\n下の打刻画面は実際のKING OF TIMEです。";
+    if (!self.testMode) {
         NSString *root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder"];
         NSString *filename = [NSString stringWithFormat:@"calendar-%@.txt", self.kind];
         message = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:filename] encoding:NSUTF8StringEncoding error:nil] ?: @"KING OF TIMEで打刻を確認してください。";
@@ -342,52 +364,129 @@ static void DrawReminderClock(NSRect bounds) {
             message = [message stringByReplacingOccurrencesOfString:@"の時刻になりました。" withString:@"の打刻リマインダーです。"];
         }
     }
-    alert.informativeText = [message stringByAppendingString:@"\n\n再通知までの時間を選んでください。"];
-    NSPopUpButton *choice = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,220,28) pullsDown:NO];
-    [choice addItemsWithTitles:@[@"10分後", @"30分後", @"1時間後", @"2時間後"]];
-    [choice selectItemAtIndex:0]; alert.accessoryView = choice;
-    [alert addButtonWithTitle:@"再通知"]; [alert addButtonWithTitle:@"閉じる"];
-    if (!test) [alert addButtonWithTitle:@"KING OF TIMEで打刻"];
-    return alert;
+    return message.length > 2000 ? [message substringToIndex:2000] : message;
 }
-- (void)testReminder:(id)sender {
-    NSAlert *alert = [self reminderAlert:YES];
-    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
-        if (response == NSAlertFirstButtonReturn) {
-            NSString *choice = [(NSPopUpButton *)alert.accessoryView titleOfSelectedItem];
-            [self showMessage:[NSString stringWithFormat:@"表示テストです。%@を選択しました。\n実際の再通知は予約しません。", choice]];
-        }
-    }];
+- (BOOL)remindersEnabled {
+    NSString *file = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder/preferences.json"];
+    NSData *data = [NSData dataWithContentsOfFile:file];
+    id prefs = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return ![prefs isKindOfClass:NSDictionary.class] || ![prefs[@"enabled"] isEqual:@NO];
+}
+- (void)checkEnabled:(NSTimer *)timer {
+    if (![self remindersEnabled]) [self closeNotification:nil];
+}
+- (void)presentReminderKind:(NSString *)kind test:(BOOL)test {
+    if (!test && ![self remindersEnabled]) return;
+    if (!self.notifications) self.notifications = [NSMutableDictionary dictionary];
+    NSString *key = test ? @"test" : kind;
+    ReminderController *controller = self.notifications[key];
+    if (!controller) {
+        controller = [[ReminderController alloc] init]; controller.owner = self;
+        controller.notificationMode = YES; controller.kind = kind; controller.testMode = test;
+        self.notifications[key] = controller;
+    }
+    [controller.reminderTimer invalidate]; controller.reminderTimer = nil; controller.repeated = NO;
+    [controller showNotification];
+}
+- (void)testReminder:(id)sender { [self presentReminderKind:@"end" test:YES]; }
+- (void)closeNotification:(id)sender {
+    [self.reminderTimer invalidate]; self.reminderTimer = nil;
+    [self.enabledTimer invalidate]; self.enabledTimer = nil;
+    if (self.window.attachedSheet) [self.window endSheet:self.window.attachedSheet returnCode:NSModalResponseCancel];
+    [self.recorderWebView stopLoading];
+    self.showingAlert = NO; [self.window orderOut:nil];
+}
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (self.notificationMode) { [self closeNotification:nil]; return NO; }
+    return YES;
+}
+- (void)snoozeNotification:(id)sender {
+    if (self.testMode) {
+        NSAlert *alert = [[NSAlert alloc] init]; alert.icon = [self clockImage];
+        alert.messageText = @"再通知の表示テスト";
+        alert.informativeText = [NSString stringWithFormat:@"%@を選択しました。\n実際の再通知は予約しません。", self.snoozeChoice.titleOfSelectedItem];
+        [alert addButtonWithTitle:@"閉じる"]; [alert beginSheetModalForWindow:self.window completionHandler:nil]; return;
+    }
+    NSInteger selected = self.snoozeChoice.indexOfSelectedItem;
+    NSArray<NSNumber *> *durations = @[@600, @1800, @3600, @7200];
+    [self.reminderTimer invalidate]; self.repeated = YES;
+    self.reminderTimer = [NSTimer scheduledTimerWithTimeInterval:durations[(NSUInteger)MAX(0, MIN(selected, 3))].doubleValue target:self selector:@selector(reminderTimerFired:) userInfo:nil repeats:NO];
+    self.showingAlert = NO; [self.window orderOut:nil];
 }
 - (void)showNotification {
-    if (self.showingAlert) return;
-    [NSApp activateIgnoringOtherApps:YES];
-    NSAlert *alert = [self reminderAlert:NO];
-    self.showingAlert = YES;
-    NSModalResponse response = [alert runModal];
-    self.showingAlert = NO;
-    if (response == NSAlertThirdButtonReturn) {
-        NSString *bundle = NSBundle.mainBundle.bundlePath;
-        for (NSUInteger i = 0; i < 4; i++) bundle = [bundle stringByDeletingLastPathComponent];
-        if ([[NSBundle bundleWithPath:bundle].bundleIdentifier isEqualToString:@"com.outlook-attendance-reminder.app"]) {
-            [[self recorderPreferences] setBool:YES forKey:@"openRequested"];
-            NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
-            [[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:bundle] configuration:configuration completionHandler:nil];
-        }
-        [NSApp terminate:nil]; return;
+    if (!self.testMode && ![self remindersEnabled]) { [self closeNotification:nil]; return; }
+    if (!self.window) {
+        self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,640,800) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+        self.window.title = self.testMode ? @"リマインダー表示テスト" : ([self.kind isEqualToString:@"start"] ? @"出勤リマインダー" : @"退勤リマインダー");
+        self.window.releasedWhenClosed = NO; self.window.delegate = self;
+        self.window.contentMinSize = NSMakeSize(580, 620); [self.window center];
+        ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.window.contentView = background;
+        NSStackView *stack = [self verticalStack:16]; [self.window.contentView addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor constant:16],
+            [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-16],
+            [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:16],
+            [stack.bottomAnchor constraintEqualToAnchor:self.window.contentView.bottomAnchor constant:-16]
+        ]];
+        ReminderClock *clock = [[ReminderClock alloc] init]; clock.translatesAutoresizingMaskIntoConstraints = NO;
+        clock.accessibilityLabel = @"笑顔の時計"; clock.accessibilityRole = NSAccessibilityImageRole;
+        [NSLayoutConstraint activateConstraints:@[[clock.widthAnchor constraintEqualToConstant:48], [clock.heightAnchor constraintEqualToConstant:48]]];
+        NSStackView *text = [self verticalStack:8];
+        [text addArrangedSubview:[self label:self.testMode ? @"リマインダー表示テスト" : @"打刻しましょう！" size:18 strong:YES muted:NO]];
+        self.reminderLabel = [self label:[self reminderMessage] size:13 strong:NO muted:YES]; [text addArrangedSubview:self.reminderLabel];
+        NSStackView *header = [NSStackView stackViewWithViews:@[clock, text]]; header.spacing = 16; header.alignment = NSLayoutAttributeTop;
+        [self.reminderLabel.widthAnchor constraintEqualToAnchor:text.widthAnchor].active = YES;
+        NSView *card = [self card:header]; [stack addArrangedSubview:card]; [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        NSStackView *panel = [self recorderPanel:320]; [stack addArrangedSubview:panel]; [panel.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        self.snoozeChoice = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; self.snoozeChoice.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.snoozeChoice addItemsWithTitles:@[@"10分後", @"30分後", @"1時間後", @"2時間後"]];
+        self.snoozeChoice.accessibilityLabel = @"再通知までの時間"; self.snoozeChoice.toolTip = @"まだ仕事中なら、次の通知までの時間を選べます";
+        [self.snoozeChoice.widthAnchor constraintEqualToConstant:120].active = YES;
+        NSButton *snooze = [self button:@"再通知" selector:@selector(snoozeNotification:)]; snooze.toolTip = @"選んだ時間が過ぎたら、もう一度通知します";
+        NSButton *close = [self button:@"閉じる" selector:@selector(closeNotification:)]; close.toolTip = @"この通知と、その再通知を終了します";
+        NSStackView *footer = [NSStackView stackViewWithViews:@[[self label:@"あとでお知らせ" size:13 strong:NO muted:YES], self.snoozeChoice, snooze, close]];
+        footer.spacing = 12; footer.alignment = NSLayoutAttributeCenterY; [stack addArrangedSubview:footer];
     }
-    if (response != NSAlertFirstButtonReturn) { [NSApp terminate:nil]; return; }
-    NSInteger selected = [(NSPopUpButton *)alert.accessoryView indexOfSelectedItem];
-    NSArray<NSNumber *> *durations = @[@600, @1800, @3600, @7200];
-    self.repeated = YES;
-    self.reminderTimer = [NSTimer scheduledTimerWithTimeInterval:durations[(NSUInteger)selected].doubleValue target:self selector:@selector(reminderTimerFired:) userInfo:nil repeats:NO];
+    self.reminderLabel.stringValue = [self reminderMessage];
+    [self.snoozeChoice selectItemAtIndex:0];
+    self.showingAlert = YES; [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+    if (!self.recorderWebView.URL || !self.repeated) {
+        if ([[self recorderPreferences] stringForKey:@"server"]) [self loadRecorder];
+        else [self configureRecorder:nil];
+    }
+    if (!self.testMode && !self.enabledTimer) self.enabledTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(checkEnabled:) userInfo:nil repeats:YES];
 }
 - (void)reminderTimerFired:(NSTimer *)timer { self.reminderTimer = nil; [self showNotification]; }
+- (void)forwardNotification {
+    NSString *bundle = NSBundle.mainBundle.bundlePath;
+    for (NSUInteger i = 0; i < 4; i++) bundle = [bundle stringByDeletingLastPathComponent];
+    if (![[NSBundle bundleWithPath:bundle].bundleIdentifier isEqualToString:@"com.outlook-attendance-reminder.app"]) { [NSApp terminate:nil]; return; }
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"outlook-attendance-reminder://remind/%@", self.kind]];
+    NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration]; configuration.arguments = @[@"--reminder"];
+    [[NSWorkspace sharedWorkspace] openURLs:@[url] withApplicationAtURL:[NSURL fileURLWithPath:bundle] configuration:configuration completionHandler:^(NSRunningApplication *application, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) {
+                NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"打刻リマインダーを開けませんでした。";
+                alert.informativeText = @"アプリケーションから「打刻リマインダー」を開き直してください。"; [alert runModal];
+            }
+            [NSApp terminate:nil];
+        });
+    }];
+}
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
+    if (self.notificationMode) return;
+    for (NSURL *url in urls) {
+        if (![url.scheme.lowercaseString isEqualToString:@"outlook-attendance-reminder"] || ![url.host isEqualToString:@"remind"] || url.query.length || url.fragment.length || url.user || url.password || url.port) continue;
+        NSString *kind = [url.path isEqualToString:@"/start"] ? @"start" : ([url.path isEqualToString:@"/end"] ? @"end" : nil);
+        if (!kind) continue;
+        if (!self.window) { if (!self.pendingKinds) self.pendingKinds = [NSMutableArray array]; [self.pendingKinds addObject:kind]; }
+        else [self presentReminderKind:kind test:NO];
+    }
+}
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)application hasVisibleWindows:(BOOL)visible {
-    if (self.notificationMode && !self.showingAlert) {
-        [self.reminderTimer invalidate]; self.reminderTimer = nil;
-        [self performSelector:@selector(showNotification) withObject:nil afterDelay:0];
-    } else if (!self.notificationMode) {
+    if (self.notificationMode) [self forwardNotification];
+    else {
         [self.window makeKeyAndOrderFront:nil];
         if ([[self recorderPreferences] boolForKey:@"openRequested"]) { [[self recorderPreferences] removeObjectForKey:@"openRequested"]; [self openRecorder:nil]; }
     }
@@ -399,13 +498,20 @@ static void DrawReminderClock(NSRect bounds) {
     if (self.notificationMode) {
         self.kind = [identifier hasSuffix:@".start"] ? @"start" : @"end";
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-        [self performSelector:@selector(showNotification) withObject:nil afterDelay:0];
+        [self performSelector:@selector(forwardNotification) withObject:nil afterDelay:0];
     } else {
+        self.launching = [NSProcessInfo.processInfo.arguments containsObject:@"--reminder"] || self.pendingKinds.count > 0;
         [self showManager];
+        for (NSString *kind in self.pendingKinds) [self presentReminderKind:kind test:NO];
+        self.pendingKinds = nil;
         if ([[self recorderPreferences] boolForKey:@"openRequested"]) { [[self recorderPreferences] removeObjectForKey:@"openRequested"]; [self openRecorder:nil]; }
     }
 }
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return !self.notificationMode; }
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    if (self.notificationMode) return NO;
+    for (ReminderController *notification in self.notifications.allValues) if (notification.reminderTimer || notification.showingAlert) return NO;
+    return YES;
+}
 @end
 
 static ReminderController *reminderController;

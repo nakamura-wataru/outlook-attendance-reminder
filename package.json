@@ -1,6 +1,6 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "Outlookの出社・出勤・退社・退勤予定から打刻を促すMacアプリ",
   "engines": { "node": ">=22" },
@@ -16,6 +16,7 @@
     "postinstall": "bash scripts/install-app.sh --dependencies-ready",
     "install:app": "bash install.command",
     "build:native": "bash scripts/build-native.command",
-    "test": "node --test source/*.test.cjs scripts/*.test.cjs"
+    "test": "node --test source/*.test.cjs scripts/*.test.cjs",
+    "test:native": "bash scripts/test-native.command"
   }
 }

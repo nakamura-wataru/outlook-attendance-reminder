@@ -48,6 +48,7 @@ function makeBundle(app, identifier, name, version, launcher) {
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>${xml(version)}</string>
 <key>CFBundleShortVersionString</key><string>${xml(version)}</string>
+${identifier === bundleIdentifier ? '<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.outlook-attendance-reminder.notification</string><key>CFBundleURLSchemes</key><array><string>outlook-attendance-reminder</string></array></dict></array>' : ''}
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSLocationUsageDescription</key><string>KING OF TIMEの公式打刻画面で、勤務先が位置情報を必要とする場合に使用します。</string>
