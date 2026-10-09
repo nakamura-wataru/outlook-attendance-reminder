@@ -53,6 +53,15 @@ static void DrawReminderClock(NSRect bounds) {
 @property NSWindow *window;
 @property NSTextField *statusLabel;
 @property NSTextField *statusBadge;
+@property NSTextField *nextReminderTitle;
+@property NSTextField *nextReminderDate;
+@property NSTextField *nextReminderDetail;
+@property NSStackView *managerLayout;
+@property NSTimer *overviewTimer;
+@property BOOL commandBusy;
+@property BOOL overviewRefreshing;
+@property BOOL overviewPendingRefresh;
+@property NSUInteger overviewRevision;
 @property NSButton *toggleButton;
 @property NSButton *migrationButton;
 @property NSMutableArray<NSButton *> *buttons;
@@ -93,24 +102,35 @@ static void DrawReminderClock(NSRect bounds) {
 
 @implementation ReminderController
 - (NSString *)resources { return [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Resources"]; }
-- (void)setBusy:(BOOL)busy { for (NSButton *button in self.buttons) button.enabled = !busy; }
+- (void)setBusy:(BOOL)busy {
+    self.commandBusy = busy;
+    if (busy) self.overviewRevision++;
+    for (NSButton *button in self.buttons) button.enabled = !busy;
+}
 - (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
-    [self setBusy:YES];
+    [self runCommand:command input:input blocking:YES completion:completion];
+}
+- (void)runCommand:(NSString *)command input:(NSString *)input blocking:(BOOL)blocking completion:(void (^)(BOOL, NSString *))completion {
+    if (blocking) [self setBusy:YES];
     NSString *runner = [[self resources] stringByAppendingPathComponent:@"launch-manager.sh"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @autoreleasepool {
             NSTask *task = [[NSTask alloc] init];
             task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
             task.arguments = input ? @[runner, command, input] : @[runner, command];
-            NSPipe *pipe = [NSPipe pipe]; task.standardOutput = pipe; task.standardError = pipe;
+            NSPipe *pipe = [NSPipe pipe], *errors = [NSPipe pipe]; task.standardOutput = pipe; task.standardError = errors;
             NSError *error = nil;
             BOOL launched = [task launchAndReturnError:&error];
+            __block NSData *errorData = nil;
+            dispatch_group_t reads = dispatch_group_create();
+            if (launched) dispatch_group_async(reads, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ errorData = [errors.fileHandleForReading readDataToEndOfFile]; });
             NSData *data = launched ? [pipe.fileHandleForReading readDataToEndOfFile] : nil;
-            if (launched) [task waitUntilExit];
-            NSString *message = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"アプリの操作を実行できませんでした。";
-            message = [message stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (launched) { [task waitUntilExit]; dispatch_group_wait(reads, DISPATCH_TIME_FOREVER); }
             BOOL ok = launched && task.terminationStatus == 0;
-            dispatch_async(dispatch_get_main_queue(), ^{ [self setBusy:NO]; completion(ok, message ?: @"もう一度お試しください。"); });
+            NSData *messageData = !ok && errorData.length ? errorData : data;
+            NSString *message = messageData ? [[NSString alloc] initWithData:messageData encoding:NSUTF8StringEncoding] : @"アプリの操作を実行できませんでした。";
+            message = [message stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (blocking) [self setBusy:NO]; completion(ok, message ?: @"もう一度お試しください。"); });
         }
     });
 }
@@ -120,20 +140,91 @@ static void DrawReminderClock(NSRect bounds) {
     alert.informativeText = message; [alert addButtonWithTitle:@"閉じる"];
     [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:nil];
 }
-- (void)refreshStatus {
-    [self runCommand:@"status" input:nil completion:^(BOOL ok, NSString *text) {
-        self.statusLabel.stringValue = text;
-        self.statusBadge.stringValue = [text hasPrefix:@"予定表：未設定"] ? @"○ 未設定" : @"○ 確認中";
-        if (!ok) return;
-        [self runCommand:@"enabled" input:nil completion:^(BOOL enabledOK, NSString *value) {
-            self.toggleButton.title = enabledOK && [value isEqualToString:@"yes"] ? @"通知を停止" : @"通知を再開";
-            self.statusBadge.stringValue = enabledOK && [value isEqualToString:@"yes"] ? @"● お知らせ中" : ([text hasPrefix:@"予定表：未設定"] ? @"○ 未設定" : @"○ 停止中");
-            [self runCommand:@"can-migrate" input:nil completion:^(BOOL migrationOK, NSString *canMigrate) {
-                self.migrationButton.hidden = !(migrationOK && [canMigrate isEqualToString:@"yes"]);
-                [self.window setContentSize:NSMakeSize(560, self.migrationButton.hidden ? 512 : 576)];
-            }];
-        }];
+- (NSString *)overviewDate:(NSString *)value format:(NSString *)format {
+    if (![value isKindOfClass:NSString.class]) return @"";
+    NSISO8601DateFormatter *iso = [[NSISO8601DateFormatter alloc] init];
+    iso.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+    NSDate *date = [iso dateFromString:value];
+    if (!date) return @"";
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init]; formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"ja_JP"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Tokyo"]; formatter.dateFormat = format;
+    return [formatter stringFromDate:date];
+}
+- (void)updateManagerLayout {
+    if (!self.managerLayout) return;
+    [self.window.contentView layoutSubtreeIfNeeded];
+    [self.window setContentSize:NSMakeSize(560, ceil(self.managerLayout.fittingSize.height + 48))];
+}
+- (void)applyOverview:(NSDictionary *)view {
+    BOOL configured = [view[@"configured"] boolValue], enabled = [view[@"enabled"] boolValue];
+    NSString *connection = view[@"connection"];
+    self.toggleButton.title = enabled ? @"通知を停止" : @"通知を再開";
+    self.migrationButton.hidden = ![view[@"canMigrate"] boolValue];
+    NSString *checked = [self overviewDate:view[@"fetchedAt"] format:@"M月d日 H:mm"];
+    if (!configured) {
+        self.statusBadge.stringValue = @"○ 予定はまだ未設定です";
+        self.statusLabel.stringValue = @"「通知の予定を設定」から始めましょう。";
+    } else if ([connection isEqualToString:@"weekly"]) {
+        self.statusBadge.stringValue = @"● 週間予定を設定済み";
+        self.statusLabel.stringValue = @"選んだ曜日の出勤・退勤時刻に合わせてお知らせします。";
+    } else if ([connection isEqualToString:@"connected"]) {
+        self.statusBadge.stringValue = @"● Outlookと接続済み";
+        self.statusLabel.stringValue = [@"予定表の最終確認：" stringByAppendingString:checked];
+    } else if ([connection isEqualToString:@"cached"]) {
+        self.statusBadge.stringValue = @"△ Outlookに再接続しています";
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"前回取得した予定でお知らせします。最終確認：%@", checked];
+    } else {
+        self.statusBadge.stringValue = @"△ Outlookに接続できませんでした";
+        self.statusLabel.stringValue = @"ネットワークやICSリンクを確認して「予定を更新」を押してください。";
+    }
+    NSDictionary *next = [view[@"nextReminder"] isKindOfClass:NSDictionary.class] ? view[@"nextReminder"] : nil;
+    self.nextReminderDate.hidden = !next; self.nextReminderDetail.hidden = !next;
+    if (next) {
+        BOOL arrival = [next[@"kind"] isEqualToString:@"start"];
+        self.nextReminderTitle.stringValue = arrival ? @"次は出勤のお知らせ" : @"次は退勤のお知らせ";
+        self.nextReminderDate.stringValue = [self overviewDate:next[@"dueAt"] format:@"M月d日（EEE）H:mm"];
+        self.nextReminderDetail.stringValue = [NSString stringWithFormat:@"%@予定 %@%@", arrival ? @"出勤" : @"退勤", [self overviewDate:next[@"plannedAt"] format:@"H:mm"], arrival ? @" の5分前" : @" になったら"];
+    } else {
+        self.nextReminderTitle.stringValue = !configured ? @"次のお知らせは、設定後に表示します" : !enabled ? @"お知らせはお休み中です" : [connection isEqualToString:@"failed"] ? @"次のお知らせを確認できませんでした" : @"向こう8日間に出勤・退勤の予定はありません";
+        if (configured && !enabled) self.statusLabel.stringValue = @"通知は停止中です。「通知を再開」から再開できます。";
+    }
+    [self updateManagerLayout];
+}
+- (void)refreshOverview:(BOOL)force {
+    if (self.commandBusy || self.overviewRefreshing) { if (force) self.overviewPendingRefresh = YES; return; }
+    self.overviewRefreshing = YES;
+    NSUInteger revision = self.overviewRevision;
+    if (force) self.statusLabel.stringValue = @"予定を確認しています…";
+    [self runCommand:force ? @"overview-refresh" : @"overview" input:nil blocking:NO completion:^(BOOL ok, NSString *text) {
+        self.overviewRefreshing = NO;
+        if (revision == self.overviewRevision) {
+            NSDictionary *view = ok ? [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
+            if ([view isKindOfClass:NSDictionary.class]) [self applyOverview:view];
+            else {
+                self.statusBadge.stringValue = @"△ 予定を確認できませんでした";
+                self.statusLabel.stringValue = @"「予定を更新」からもう一度お試しください。";
+                self.nextReminderTitle.stringValue = @"次のお知らせを確認できませんでした";
+                self.nextReminderDate.hidden = YES; self.nextReminderDetail.hidden = YES; [self updateManagerLayout];
+            }
+        }
+        if (self.overviewPendingRefresh && !self.commandBusy) { self.overviewPendingRefresh = NO; [self refreshOverview:YES]; }
     }];
+}
+- (void)refreshStatus { [self refreshOverview:YES]; }
+- (void)refreshOverviewTimer:(NSTimer *)timer {
+    if (self.window.visible && !self.window.attachedSheet && !self.scheduleWindow.visible) [self refreshOverview:NO];
+}
+- (void)refreshCalendar:(id)sender { [self refreshStatus]; }
+- (NSString *)calendarConfigurationRoot {
+    return NSProcessInfo.processInfo.environment[@"ATTENDANCE_REMINDER_ROOT"] ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder"];
+}
+- (NSString *)savedCalendarLink {
+    NSData *data = [NSData dataWithContentsOfFile:[[self calendarConfigurationRoot] stringByAppendingPathComponent:@"config.json"]];
+    NSDictionary *config = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![config isKindOfClass:NSDictionary.class] || ![config[@"icsUrl"] isKindOfClass:NSString.class]) return @"";
+    NSURL *url = [NSURL URLWithString:config[@"icsUrl"]];
+    return [url.scheme.lowercaseString isEqualToString:@"https"] && !url.user.length && !url.password.length ? config[@"icsUrl"] : @"";
 }
 - (NSButton *)button:(NSString *)title selector:(SEL)selector {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:selector];
@@ -180,7 +271,7 @@ static void DrawReminderClock(NSRect bounds) {
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,620) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"打刻リマインダー"; self.window.releasedWhenClosed = NO; [self.window center];
     ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.window.contentView = background;
-    NSStackView *stack = [self verticalStack:16];
+    NSStackView *stack = [self verticalStack:16]; self.managerLayout = stack; stack.detachesHiddenViews = YES;
     [self.window.contentView addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor constant:24],
@@ -199,6 +290,18 @@ static void DrawReminderClock(NSRect bounds) {
     NSStackView *status = [self verticalStack:8];
     self.statusBadge = [self label:@"○ 確認中" size:15 strong:YES muted:NO]; [status addArrangedSubview:self.statusBadge];
     self.statusLabel = [self label:@"設定を確認しています…" size:13 strong:NO muted:YES]; [status addArrangedSubview:self.statusLabel];
+    NSStackView *next = [self verticalStack:4]; next.detachesHiddenViews = YES;
+    self.nextReminderTitle = [self label:@"次のお知らせを確認しています…" size:15 strong:YES muted:NO];
+    self.nextReminderDate = [self label:@"" size:18 strong:YES muted:NO]; self.nextReminderDate.hidden = YES;
+    self.nextReminderDetail = [self label:@"" size:13 strong:NO muted:YES]; self.nextReminderDetail.hidden = YES;
+    [next addArrangedSubview:self.nextReminderTitle]; [next addArrangedSubview:self.nextReminderDate]; [next addArrangedSubview:self.nextReminderDetail];
+    ReminderClock *nextClock = [[ReminderClock alloc] init]; nextClock.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[[nextClock.widthAnchor constraintEqualToConstant:48], [nextClock.heightAnchor constraintEqualToConstant:48]]];
+    NSStackView *nextRow = [NSStackView stackViewWithViews:@[nextClock, next]]; nextRow.spacing = 12; nextRow.alignment = NSLayoutAttributeCenterY;
+    [status addArrangedSubview:nextRow]; [status setCustomSpacing:16 afterView:self.statusLabel];
+    [nextRow.widthAnchor constraintEqualToAnchor:status.widthAnchor].active = YES;
+    [next.widthAnchor constraintEqualToAnchor:status.widthAnchor constant:-60].active = YES;
+    for (NSTextField *label in @[self.nextReminderTitle, self.nextReminderDate, self.nextReminderDetail]) [label.widthAnchor constraintEqualToAnchor:next.widthAnchor].active = YES;
     NSView *statusCard = [self card:status]; [stack addArrangedSubview:statusCard];
     [statusCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [self.statusLabel.widthAnchor constraintEqualToAnchor:status.widthAnchor].active = YES;
@@ -211,18 +314,23 @@ static void DrawReminderClock(NSRect bounds) {
     NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
     self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"通知の停止・再開は、Macを再起動しても維持されます";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
-    NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
+    NSButton *refresh = [self button:@"予定を更新" selector:@selector(refreshCalendar:)]; refresh.toolTip = @"Outlookとの接続と、次のお知らせをもう一度確認します";
+    NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, refresh, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
     self.migrationButton = [self button:@"既存の設定を引き継ぐ" selector:@selector(migrate:)]; self.migrationButton.hidden = YES; [stack addArrangedSubview:self.migrationButton];
     [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n通知の「打刻画面を開く」からKING OF TIMEを表示します。" size:12 strong:NO muted:YES]];
     [NSApp setApplicationIconImage:[self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
     [self runCommand:@"ensure" input:nil completion:^(BOOL ok, NSString *message) { [self refreshStatus]; }];
+    self.overviewTimer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(refreshOverviewTimer:) userInfo:nil repeats:YES];
 }
 - (void)configure:(id)sender {
     NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"予定表の設定";
     alert.icon = [self clockImage];
-    alert.informativeText = @"自分のOutlook予定表のICSリンクを入力してください。リンクは自分のMacにだけ保存します。";
+    NSString *savedLink = [self savedCalendarLink];
+    alert.informativeText = savedLink.length ? @"登録済みのICSリンクです。変更する場合は、新しいリンクに貼り替えてください。" : @"自分のOutlook予定表のICSリンクを入力してください。リンクは自分のMacにだけ保存します。";
     NSSecureTextField *field = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,360,26)];
+    field.usesSingleLineMode = YES; [(NSTextFieldCell *)field.cell setScrollable:YES];
+    field.stringValue = savedLink; field.accessibilityLabel = @"OutlookのICSリンク";
     field.placeholderString = @"https://…"; alert.accessoryView = field;
     [alert addButtonWithTitle:@"設定"]; [alert addButtonWithTitle:@"キャンセル"];
     [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:^(NSModalResponse response) {
@@ -657,6 +765,7 @@ static void DrawReminderClock(NSRect bounds) {
     if (self.notificationMode) [self forwardNotification];
     else {
         [self.window makeKeyAndOrderFront:nil];
+        [self refreshStatus];
         if ([[self recorderPreferences] boolForKey:@"openRequested"]) { [[self recorderPreferences] removeObjectForKey:@"openRequested"]; [self openRecorder:nil]; }
     }
     return YES;

@@ -5,6 +5,8 @@ const { spawnSync } = require('node:child_process');
 const ical = require('node-ical');
 const { saveConfig } = require('./configure.cjs');
 const { readSchedule, validateSchedule } = require('./weekly-schedule.cjs');
+const { refreshTargets, fetchTargets, maxCacheAge } = require('./calendar-reminder.cjs');
+const { nextReminder } = require('./calendar-core.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
 class UiError extends Error {}
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -186,8 +188,31 @@ function createManager(options = {}) {
     const source = readSchedule(root).mode === 'weekly' ? '通知元：週間予定（月〜金）' : '通知元：Outlookの予定表';
     return enabled() ? `通知：有効\n${source}\n出勤は5分前、退勤は予定時刻にお知らせします。\nこの画面を閉じても通知は続きます。` : `通知：停止中\n${source}\n「通知を再開」から再開できます。`;
   }
-  return { root, bundle, configured, enabled, start, stop, configure, configureSchedule, schedule: () => readSchedule(root), migrate, ensure, status,
-    canMigrate: () => !configured() && typeof json(legacyConfig, {}).icsUrl === 'string' && fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs')) };
+  const canMigrate = () => !configured() && typeof json(legacyConfig, {}).icsUrl === 'string' && fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs'));
+  async function overview(force = false) {
+    const now = options.now ? options.now() : new Date();
+    const schedule = readSchedule(root);
+    const view = { configured: configured(), enabled: enabled(), source: schedule.mode, connection: 'unconfigured', fetchedAt: null, nextReminder: null, canMigrate: canMigrate() };
+    if (!view.configured) return view;
+    const statePath = path.join(root, 'calendar-state.json');
+    const stored = json(statePath, {});
+    const state = Array.isArray(stored.targets) && stored.notified && Number.isFinite(stored.fetchedAt) ? stored : { targets: [], notified: {}, fetchedAt: 0 };
+    // This read-only preview shares the worker's timing and cache rules. It must
+    // never mark notifications as sent or overwrite a concurrent worker's state.
+    const result = await refreshTargets(state, schedule, now, date => fetchTargets(date, root, options.fetch || fetch), force);
+    const data = result.state;
+    const age = now.getTime() - data.fetchedAt;
+    const usable = data.fetchedAt > 0 && age >= 0 && age <= maxCacheAge;
+    view.connection = schedule.mode === 'weekly' ? 'weekly' : data.fetchFailed ? (usable ? 'cached' : 'failed') : 'connected';
+    if (schedule.mode === 'outlook' && usable) view.fetchedAt = new Date(data.fetchedAt).toISOString();
+    if (view.enabled && (schedule.mode === 'weekly' || usable)) {
+      const current = options.now ? options.now() : new Date();
+      const notified = json(statePath, state).notified || state.notified;
+      view.nextReminder = nextReminder(data.targets, notified, current);
+    }
+    return view;
+  }
+  return { root, bundle, configured, enabled, start, stop, configure, configureSchedule, schedule: () => readSchedule(root), migrate, ensure, status, canMigrate, overview };
 }
 module.exports = { createManager, makeAgent, UiError };
 if (require.main === module) {
@@ -201,6 +226,7 @@ if (require.main === module) {
     else if (['status', 'start', 'stop', 'migrate', 'ensure'].includes(command)) { const result = manager[command](); if (result) console.log(result); }
     else if (command === 'configure') console.log(await manager.configure(process.argv[3]));
     else if (command === 'schedule') console.log(JSON.stringify(manager.schedule()));
+    else if (command === 'overview' || command === 'overview-refresh') console.log(JSON.stringify(await manager.overview(command === 'overview-refresh')));
     else if (command === 'configure-schedule') console.log(manager.configureSchedule(process.argv[3]));
     else throw new UiError('この操作には対応していません。');
   })().catch(error => { console.error(error instanceof UiError ? error.message : '設定を変更できませんでした。もう一度お試しください。'); process.exitCode = 1; });

@@ -26,6 +26,8 @@ bash install.command
 
 アプリの「通知の予定を設定」を開き、使いたい方式を選びます。
 
+メイン画面の時計のカードで、接続状態と次の通知日時を確認できます。「予定を更新」を押すと、最新の予定を確認します。
+
 ### 月〜金の時刻を自分で設定する
 
 1. 「週間予定（月〜金）」を選びます。
@@ -39,6 +41,8 @@ bash install.command
 1. 「Outlookの予定表」を選びます。
 2. 「OutlookのICSリンクを設定」を押し、自分の予定表のICSリンクを入力します。
 3. 接続を確認できると通知が始まります。
+
+登録したICSリンクは、設定を開き直すと入力済みの状態で表示します。
 
 ICSリンクはOutlook Webの「設定 → 予定表 → 共有の予定表 → 予定表の公開」で取得します。予定名が見える公開範囲を選び、ICSリンクを使ってください。[Microsoftの手順](https://support.microsoft.com/en-us/outlook/share-your-calendar-in-outlook-on-the-web)
 

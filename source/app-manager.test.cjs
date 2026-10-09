@@ -8,7 +8,7 @@ const { defaultSchedule } = require('./weekly-schedule.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
 const calendar = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Reminder Test//EN\r\nEND:VCALENDAR\r\n';
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-app-test-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const root = path.join(home, 'Library/Application Support/OutlookAttendanceReminder');
@@ -31,10 +31,94 @@ function fixture(t) {
     }
     return { status: 0 };
   };
-  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, fetch: async () => { fetches.push(true); return new Response(calendar); } });
+  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, fetch: async () => { fetches.push(true); return new Response(calendar); }, ...options });
   const input = (value = 'https://example.invalid/calendar.ics') => { const file = path.join(home, 'private-input.txt'); fs.writeFileSync(file, value, { mode: 0o600 }); return file; };
   return { home, root, bundle, manager, input, calls, loaded, fetches, failBootstrap: () => { failNextBootstrap = true; } };
 }
+
+const overviewNow = new Date('2026-10-09T00:30:00Z');
+const attendanceCalendar = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Reminder Test//EN\r\nBEGIN:VEVENT\r\nUID:arrival\r\nDTSTART:20261009T004500Z\r\nDTEND:20261009T010000Z\r\nSUMMARY:出社\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:departure\r\nDTSTART:20261009T094500Z\r\nDTEND:20261009T100000Z\r\nSUMMARY:退勤\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+
+test('overview stays unconfigured until a source is actually set', async t => {
+  const f = fixture(t, { now: () => overviewNow });
+  assert.deepEqual(await f.manager.overview(true), { configured: false, enabled: false, source: 'outlook', connection: 'unconfigured', fetchedAt: null, nextReminder: null, canMigrate: false });
+  assert.equal(f.fetches.length, 0);
+});
+
+test('overview verifies Outlook and returns the actual next reminder without exposing links or writing history', async t => {
+  const requests = [];
+  const f = fixture(t, { now: () => overviewNow, fetch: async () => { requests.push(true); return new Response(attendanceCalendar); } });
+  await f.manager.configure(f.input());
+  const view = await f.manager.overview(true);
+  assert.equal(requests.length, 2); assert.equal(view.connection, 'connected'); assert.equal(view.enabled, true);
+  assert.deepEqual(view.nextReminder, { kind: 'start', plannedAt: '2026-10-09T00:45:00.000Z', dueAt: '2026-10-09T00:40:00.000Z' });
+  assert.equal(view.fetchedAt, overviewNow.toISOString());
+  assert.equal(fs.existsSync(path.join(f.root, 'calendar-state.json')), false);
+  assert.ok(!JSON.stringify(view).includes('example.invalid')); assert.ok(!JSON.stringify(view).includes('subject'));
+  f.manager.stop(); assert.equal((await f.manager.overview(true)).nextReminder, null);
+});
+
+test('overview reuses fresh worker data, skips sent reminders, and a manual refresh checks the connection again', async t => {
+  const f = fixture(t, { now: () => overviewNow }); await f.manager.configure(f.input());
+  const state = { source: 'outlook', fetchedAt: overviewNow.getTime() - 60000, notified: { sent: 1 }, targets: [
+    { id: 'sent', kind: 'start', plannedAt: '2026-10-09T00:45:00Z', dueAt: '2026-10-09T00:40:00Z' },
+    { id: 'next', kind: 'end', plannedAt: '2026-10-09T09:45:00Z', dueAt: '2026-10-09T09:40:00Z' },
+  ] };
+  const stateFile = path.join(f.root, 'calendar-state.json'); fs.writeFileSync(stateFile, JSON.stringify(state));
+  const before = fs.readFileSync(stateFile);
+  const view = await f.manager.overview();
+  assert.equal(f.fetches.length, 1); assert.equal(view.nextReminder.kind, 'end');
+  assert.equal(view.nextReminder.dueAt, '2026-10-09T09:45:00.000Z');
+  const refreshed = await f.manager.overview(true);
+  assert.equal(f.fetches.length, 2); assert.equal(refreshed.connection, 'connected'); assert.equal(refreshed.nextReminder, null);
+  assert.deepEqual(fs.readFileSync(stateFile), before);
+});
+
+test('overview distinguishes a bounded fallback from an unavailable connection and never advertises expired data', async t => {
+  let unavailable = false;
+  const f = fixture(t, { now: () => overviewNow, fetch: async () => { if (unavailable) throw new Error('private URL must never be shown'); return new Response(calendar); } });
+  await f.manager.configure(f.input()); unavailable = true;
+  const stateFile = path.join(f.root, 'calendar-state.json');
+  const targets = [{ id: 'next', kind: 'end', plannedAt: '2026-10-09T09:45:00Z', dueAt: '2026-10-09T09:45:00Z' }];
+  for (const [minutes, connection] of [[14, 'cached'], [15, 'cached'], [16, 'failed']]) {
+    const state = { source: 'outlook', fetchedAt: overviewNow.getTime() - minutes * 60000, targets, notified: {} };
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    const view = await f.manager.overview();
+    assert.equal(view.connection, connection);
+    assert.equal(!!view.nextReminder, minutes <= 15); assert.equal(!!view.fetchedAt, minutes <= 15);
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)), state);
+    assert.ok(!JSON.stringify(view).includes('private URL'));
+  }
+  fs.rmSync(stateFile); const disconnected = await f.manager.overview();
+  assert.equal(disconnected.connection, 'failed'); assert.equal(disconnected.nextReminder, null);
+});
+
+test('weekly overview works offline, follows new weekday settings, and never falls back to weekly data in Outlook mode', async t => {
+  const f = fixture(t, { now: () => overviewNow }); await f.manager.configure(f.input());
+  const schedule = { ...defaultSchedule(), mode: 'weekly' }; schedule.weekdays[4].start = '10:00';
+  f.manager.configureSchedule(f.input(JSON.stringify(schedule)));
+  const weekly = await f.manager.overview();
+  assert.equal(weekly.connection, 'weekly'); assert.equal(f.fetches.length, 1);
+  assert.equal(weekly.nextReminder.dueAt, '2026-10-09T00:55:00.000Z');
+  fs.writeFileSync(path.join(f.root, 'calendar-state.json'), JSON.stringify({ source: 'weekly', fetchedAt: overviewNow.getTime(), targets: [{ id: 'weekly', kind: 'start', plannedAt: '2026-10-09T01:00:00Z', dueAt: '2026-10-09T00:55:00Z' }], notified: {} }));
+  f.manager.configureSchedule(f.input(JSON.stringify({ mode: 'outlook' })));
+  const switched = await f.manager.overview();
+  assert.equal(f.fetches.length, 2); assert.equal(switched.connection, 'connected'); assert.equal(switched.nextReminder, null);
+});
+
+test('overview observes notification history written while the calendar request was running', async t => {
+  let f, markSent = false;
+  f = fixture(t, { now: () => overviewNow, fetch: async () => {
+    if (markSent) {
+      const { targetsFromCalendar } = require('./calendar-core.cjs'), ical = require('node-ical');
+      const targets = targetsFromCalendar(ical.sync.parseICS(attendanceCalendar), ical, overviewNow);
+      fs.writeFileSync(path.join(f.root, 'calendar-state.json'), JSON.stringify({ targets, notified: { [targets[0].id]: overviewNow.getTime() }, fetchedAt: overviewNow.getTime(), source: 'outlook' }));
+    }
+    return new Response(attendanceCalendar);
+  } });
+  await f.manager.configure(f.input()); markSent = true;
+  assert.equal((await f.manager.overview(true)).nextReminder.kind, 'end');
+});
 
 test('weekly mode configures without an Outlook account or network request and survives stop/restart', t => {
   const f = fixture(t); const weekly = { ...defaultSchedule(), mode: 'weekly' };

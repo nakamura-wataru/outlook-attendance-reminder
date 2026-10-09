@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const ical = require('node-ical');
-const { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage } = require('./calendar-core.cjs');
+const { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage, nextReminder } = require('./calendar-core.cjs');
 
 const now = new Date('2026-10-02T07:00:00Z');
 function parse(body) {
@@ -95,4 +95,16 @@ test('the message distinguishes arrival before work from the scheduled departure
   assert.match(reminderMessage({ kind: 'start', plannedAt }), /出勤予定 20:00 の5分前です。/);
   assert.match(reminderMessage({ kind: 'end', plannedAt }), /退勤予定 20:00 の時刻になりました。/);
   assert.doesNotMatch(reminderMessage({ kind: 'end', plannedAt }), /5分前/);
+});
+
+test('next reminder honours arrival expiration and the departure grace window instead of advertising missed notifications', () => {
+  const targets = [
+    { id: 'arrival', kind: 'start', plannedAt: '2026-10-09T00:45:00Z', dueAt: '2026-10-09T00:40:00Z' },
+    { id: 'departure', kind: 'end', plannedAt: '2026-10-09T09:45:00Z', dueAt: '2026-10-09T09:40:00Z' },
+  ];
+  assert.equal(nextReminder(targets, {}, new Date('2026-10-09T00:44:59Z')).kind, 'start');
+  assert.equal(nextReminder(targets, {}, new Date('2026-10-09T00:45:00Z')).kind, 'end');
+  assert.equal(nextReminder(targets, {}, new Date('2026-10-09T09:49:59Z')).kind, 'end');
+  assert.equal(nextReminder(targets, {}, new Date('2026-10-09T09:50:00Z')), null);
+  assert.equal(nextReminder(targets, { arrival: 1, departure: 1 }, new Date('2026-10-09T00:30:00Z')), null);
 });

@@ -18,10 +18,10 @@ function writeAtomic(filename, value) {
   fs.renameSync(temporary, filename);
 }
 
-async function fetchTargets(now) {
-  const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8'));
+async function fetchTargets(now, calendarRoot = root, request = fetch) {
+  const config = JSON.parse(fs.readFileSync(path.join(calendarRoot, 'config.json'), 'utf8'));
   if (new URL(config.icsUrl).protocol !== 'https:') throw new Error('HTTPSRequired');
-  const response = await fetch(config.icsUrl, { signal: AbortSignal.timeout(20000) });
+  const response = await request(config.icsUrl, { signal: AbortSignal.timeout(20000) });
   if (!response.ok) throw new Error('CalendarFetchFailed');
   const body = await response.text();
   if (!/^BEGIN:VCALENDAR\s*$/m.test(body)) throw new Error('InvalidCalendarData');
@@ -29,15 +29,15 @@ async function fetchTargets(now) {
   return targetsFromCalendar(data, ical, now);
 }
 
-async function refreshTargets(state, schedule, now, fetchCalendar = fetchTargets) {
-  if (schedule.mode === 'weekly') return { state: { ...state, source: 'weekly', targets: weeklyTargets(schedule, now), fetchedAt: now.getTime() } };
+async function refreshTargets(state, schedule, now, fetchCalendar = fetchTargets, force = false) {
+  if (schedule.mode === 'weekly') return { state: { ...state, source: 'weekly', targets: weeklyTargets(schedule, now), fetchedAt: now.getTime(), fetchFailed: false } };
   // Never use weekly targets as a fallback after switching to Outlook.
   const cached = state.source && state.source !== 'outlook' ? { ...state, targets: [], fetchedAt: 0, source: 'outlook' } : state;
-  if (now.getTime() - cached.fetchedAt < syncPeriod) return { state: cached };
+  if (!force && cached.fetchedAt > 0 && now.getTime() - cached.fetchedAt >= 0 && now.getTime() - cached.fetchedAt < syncPeriod) return { state: cached };
   try {
-    return { state: { ...cached, targets: await fetchCalendar(now), fetchedAt: now.getTime(), source: 'outlook' }, synced: true };
+    return { state: { ...cached, targets: await fetchCalendar(now), fetchedAt: now.getTime(), source: 'outlook', fetchFailed: false }, synced: true };
   } catch (error) {
-    return { state: cached, error, stale: now.getTime() - cached.fetchedAt > maxCacheAge };
+    return { state: { ...cached, fetchFailed: true }, error, stale: !cached.fetchedAt || now.getTime() - cached.fetchedAt > maxCacheAge };
   }
 }
 
@@ -84,7 +84,7 @@ async function main() {
   if (result.error) {
     // Never log private URLs or a fetch stack trace.
     console.error(`[${new Date().toISOString()}] 予定を取得できません（${result.error.name}）。次の実行で再試行します。`);
-    if (result.stale) { process.exitCode = 1; return; }
+    if (result.stale) { writeAtomic(statePath, JSON.stringify(state, null, 2)); process.exitCode = 1; return; }
   }
   const current = new Date();
   for (const target of dueTargets(state.targets, state.notified, current)) {
@@ -105,7 +105,7 @@ async function main() {
   writeAtomic(statePath, JSON.stringify(state, null, 2));
 }
 
-module.exports = { refreshTargets };
+module.exports = { refreshTargets, fetchTargets, maxCacheAge };
 if (require.main === module) main().catch(error => {
   console.error(`リマインダーを実行できません（${error.name}）。`);
   process.exitCode = 1;

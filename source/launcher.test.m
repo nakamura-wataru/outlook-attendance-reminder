@@ -67,11 +67,70 @@
     completion(YES, @"saved");
 }
 @end
+@interface OverviewFieldProbe : NSObject
+@property NSString *stringValue;
+@property NSString *title;
+@property (getter=isHidden) BOOL hidden;
+@end
+@implementation OverviewFieldProbe
+@end
+@interface OverviewProbe : ReminderController
+@property NSString *fixtureRoot;
+@end
+@implementation OverviewProbe
+- (NSString *)calendarConfigurationRoot { return self.fixtureRoot; }
+- (void)updateManagerLayout {}
+@end
+@interface CommandOutputProbe : ReminderController
+@property NSString *fixtureResources;
+@end
+@implementation CommandOutputProbe
+- (NSString *)resources { return self.fixtureResources; }
+@end
 static void Check(BOOL passed, NSString *message) {
     if (!passed) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
 int main(void) {
     @autoreleasepool {
+        OverviewProbe *overview = [[OverviewProbe alloc] init];
+        overview.fixtureRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-native-config-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+        [NSFileManager.defaultManager createDirectoryAtPath:overview.fixtureRoot withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *configFile = [overview.fixtureRoot stringByAppendingPathComponent:@"config.json"];
+        Check([overview.savedCalendarLink isEqual:@""], @"Unconfigured calendars start with an empty link");
+        [@"{\"icsUrl\":\"https://example.invalid/saved-calendar.ics\"}" writeToFile:configFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        Check([overview.savedCalendarLink isEqual:@"https://example.invalid/saved-calendar.ics"], @"Settings prefill the saved calendar link");
+        [@"{\"icsUrl\":5}" writeToFile:configFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        Check([overview.savedCalendarLink isEqual:@""], @"Invalid configuration does not crash the settings dialog");
+        CommandOutputProbe *command = [[CommandOutputProbe alloc] init]; command.fixtureResources = overview.fixtureRoot;
+        NSString *runner = [command.fixtureResources stringByAppendingPathComponent:@"launch-manager.sh"];
+        [@"printf '[node-ical] warning\\n' >&2\nprintf '{\"connected\":true}\\n'\n" writeToFile:runner atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        __block BOOL commandFinished = NO, commandOK = NO; __block NSString *commandMessage;
+        [command runCommand:@"overview" input:nil blocking:NO completion:^(BOOL ok, NSString *message) { commandFinished = YES; commandOK = ok; commandMessage = message; }];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+        while (!commandFinished && deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+        Check(commandOK && [commandMessage isEqual:@"{\"connected\":true}"], @"Parser warnings do not corrupt structured command output");
+        [@"printf 'not a result\\n'\nprintf 'settings failed\\n' >&2\nexit 1\n" writeToFile:runner atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        commandFinished = NO;
+        [command runCommand:@"configure" input:nil blocking:NO completion:^(BOOL ok, NSString *message) { commandFinished = YES; commandOK = ok; commandMessage = message; }];
+        deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+        while (!commandFinished && deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+        Check(commandFinished && !commandOK && [commandMessage isEqual:@"settings failed"], @"Failed operations still display their error message");
+        puts("PASS: calendar warnings remain separate from structured command results");
+        [NSFileManager.defaultManager removeItemAtPath:overview.fixtureRoot error:nil];
+        puts("PASS: saved Outlook links populate settings without being sent to a command");
+        overview.statusBadge = (NSTextField *)[[OverviewFieldProbe alloc] init]; overview.statusLabel = (NSTextField *)[[OverviewFieldProbe alloc] init];
+        overview.nextReminderTitle = (NSTextField *)[[OverviewFieldProbe alloc] init]; overview.nextReminderDate = (NSTextField *)[[OverviewFieldProbe alloc] init]; overview.nextReminderDetail = (NSTextField *)[[OverviewFieldProbe alloc] init];
+        overview.toggleButton = (NSButton *)[[OverviewFieldProbe alloc] init]; overview.migrationButton = (NSButton *)[[OverviewFieldProbe alloc] init];
+        NSMutableDictionary *view = [@{@"configured": @YES, @"enabled": @YES, @"connection": @"connected", @"fetchedAt": @"2026-10-09T00:30:00.000Z", @"nextReminder": @{@"kind": @"start", @"plannedAt": @"2026-10-09T00:45:00.000Z", @"dueAt": @"2026-10-09T00:40:00.000Z"}} mutableCopy];
+        [overview applyOverview:view];
+        Check([overview.statusBadge.stringValue isEqual:@"● Outlookと接続済み"] && [overview.nextReminderDate.stringValue isEqual:@"10月9日（金）9:40"] && [overview.nextReminderDetail.stringValue containsString:@"9:45 の5分前"], @"Connected preview uses Japan time and the actual reminder time");
+        view[@"connection"] = @"cached"; [overview applyOverview:view];
+        Check([overview.statusBadge.stringValue containsString:@"再接続"] && [overview.statusLabel.stringValue containsString:@"前回取得"], @"Cached reminders are not described as a verified connection");
+        view[@"connection"] = @"failed"; view[@"nextReminder"] = NSNull.null; [overview applyOverview:view];
+        Check(overview.nextReminderDate.hidden && [overview.nextReminderTitle.stringValue containsString:@"確認できません"], @"Unavailable calendars hide the previous reminder time");
+        view[@"connection"] = @"connected"; view[@"enabled"] = @NO; [overview applyOverview:view];
+        Check([overview.nextReminderTitle.stringValue isEqual:@"お知らせはお休み中です"] && [overview.toggleButton.title isEqual:@"通知を再開"], @"Stopped notifications do not advertise a scheduled reminder");
+        puts("PASS: overview distinguishes connection, fallback, unavailable, and stopped states");
         ScheduleSaveProbe *scheduleSave = [[ScheduleSaveProbe alloc] init];
         ScheduleControlProbe *weeklyMode = [[ScheduleControlProbe alloc] init];
         scheduleSave.weeklyModeButton = (NSButton *)weeklyMode;

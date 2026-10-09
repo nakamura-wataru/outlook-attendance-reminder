@@ -57,4 +57,15 @@ function reminderMessage(target) {
   return `${date} ${kind}予定 ${time} ${timing}\nKING OF TIMEで${action}の打刻を確認してください。\n${target.kind === 'end' ? 'まだ仕事中なら再通知までの時間を選べます。' : '打刻は実際に業務を開始する時刻に行ってください。'}`;
 }
 
-module.exports = { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage };
+function nextReminder(targets, notified, now = new Date()) {
+  const due = new Set(dueTargets(targets, notified, now).map(target => target.id));
+  const upcoming = targets.flatMap(target => {
+    if (!['start', 'end'].includes(target.kind) || notified[target.id]) return [];
+    const plannedAt = new Date(target.plannedAt), dueAt = new Date(target.kind === 'end' ? target.plannedAt : target.dueAt);
+    if (!Number.isFinite(plannedAt.getTime()) || !Number.isFinite(dueAt.getTime()) || (dueAt <= now && !due.has(target.id))) return [];
+    return [{ kind: target.kind, plannedAt: plannedAt.toISOString(), dueAt: dueAt.toISOString() }];
+  }).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  return upcoming[0] || null;
+}
+
+module.exports = { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage, nextReminder };
