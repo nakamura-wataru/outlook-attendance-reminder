@@ -2,12 +2,22 @@
 
 Outlookの「出社」「退社」予定の5分前に、KING OF TIMEの打刻を促すMacアプリです。
 
-## インストール
+## ZIPからインストール（Node.js不要）
+
+[Releases](https://github.com/ibj-labo/outlook-attendance-reminder/releases)から配布用の `AttendanceReminder-Mac-v2.1.0.zip` を取得します。GitHubが自動生成する「Source code」のZIPは開発用ソースです。
+
+1. 配布用ZIPを解凍します。
+2. 「打刻リマインダー.app」をFinderの「アプリケーション」へ移動します。
+3. 移動したアプリを開き、「予定表を設定・変更」で自分のOutlook予定表のICSリンクを登録します。
+
+Node.jsや開発用ツールの準備は不要です。詳しい使い方と制限は、ZIP内の「使い方.txt」にあります。配布者の予定表リンク・予定データ・通知履歴は含めません。
+
+## Gitからインストール
 
 このリポジトリを取得して、次のコマンドを実行します。非公開リポジトリの場合は、先にアクセス権を持つGitHubアカウントで認証してください。
 
 ```sh
-git clone https://github.com/nakamura-wataru/outlook-attendance-reminder.git
+git clone https://github.com/ibj-labo/outlook-attendance-reminder.git
 cd outlook-attendance-reminder
 npm install
 ```
