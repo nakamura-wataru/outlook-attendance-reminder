@@ -2,16 +2,6 @@
 
 Outlookの「出社」「退社」予定の5分前に、KING OF TIMEの打刻を促すMacアプリです。
 
-## ZIPからインストール（Node.js不要）
-
-[Releases](https://github.com/ibj-labo/outlook-attendance-reminder/releases)から配布用の `AttendanceReminder-Mac-v2.1.0.zip` を取得します。GitHubが自動生成する「Source code」のZIPは開発用ソースです。
-
-1. 配布用ZIPを解凍します。
-2. 「打刻リマインダー.app」をFinderの「アプリケーション」へ移動します。
-3. 移動したアプリを開き、「予定表を設定・変更」で自分のOutlook予定表のICSリンクを登録します。
-
-Node.jsや開発用ツールの準備は不要です。詳しい使い方と制限は、ZIP内の「使い方.txt」にあります。配布者の予定表リンク・予定データ・通知履歴は含めません。
-
 ## Gitからインストール
 
 このリポジトリを取得して、次のコマンドを実行します。非公開リポジトリの場合は、先にアクセス権を持つGitHubアカウントで認証してください。
@@ -73,22 +63,5 @@ ICSリンクを持つ人は公開された予定表を読めるため、他人�
 macOS 11以降、Appleシリコン／Intel向けです。同梱の小さな実行ファイルは両方に対応し、Node.jsはそのMac用だけを取得します。AppleシリコンのMacで検証しています。Intel実機では未検証です。
 
 Apple Developerの配布署名・公証は未対応です。初回にmacOSの確認が出る場合は、組織のルールに従って許可してください。[Appleの案内](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)
-
-## 開発
-
-依存ライブラリだけを取得する場合は、アプリをインストールするスクリプトを止めて実行します。
-
-```sh
-npm ci --ignore-scripts
-npm test
-```
-
-画面のソースは `source/launcher.m`、予定表処理は `source/calendar-core.cjs` と `source/calendar-reminder.cjs` です。ネイティブ実行ファイルは約200KBだけをGitで管理し、大きなNode.js本体や個人設定はGitに入れません。
-
-画面のソースを変更した場合は、XcodeまたはCommand Line Toolsを準備したMacで次を実行し、`native/launcher` と `native/launcher.sha256` を一緒に更新してください。
-
-```sh
-npm run build:native
-```
 
 Node.js 22.23.3は[公式配布物](https://nodejs.org/download/release/v22.23.3/)を取得し、固定した公式SHA-256で検証します。依存ライブラリは `package-lock.json` で固定します。ライセンスはアプリ内の各ライブラリとNode.jsに同梱しています。[同梱ソフトウェア](source/THIRD_PARTY_NOTICES.md)
