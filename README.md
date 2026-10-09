@@ -7,7 +7,7 @@ Outlookの「出社」「退社」予定の5分前に、KING OF TIMEの打刻を
 このリポジトリを取得して、次のコマンドを実行します。非公開リポジトリの場合は、先にアクセス権を持つGitHubアカウントで認証してください。
 
 ```sh
-git clone https://github.com/ibj-labo/outlook-attendance-reminder.git
+git clone git@github.com:ibj-labo/outlook-attendance-reminder.git
 cd outlook-attendance-reminder
 npm install
 ```
