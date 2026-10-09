@@ -317,7 +317,6 @@ static void DrawReminderClock(NSRect bounds) {
     NSButton *refresh = [self button:@"予定を更新" selector:@selector(refreshCalendar:)]; refresh.toolTip = @"Outlookとの接続と、次のお知らせをもう一度確認します";
     NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, refresh, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
     self.migrationButton = [self button:@"既存の設定を引き継ぐ" selector:@selector(migrate:)]; self.migrationButton.hidden = YES; [stack addArrangedSubview:self.migrationButton];
-    [stack addArrangedSubview:[self label:@"再通知は10分・30分・1時間・2時間から選べます。\n通知の「打刻画面を開く」からKING OF TIMEを表示します。" size:12 strong:NO muted:YES]];
     [NSApp setApplicationIconImage:[self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
     [self runCommand:@"ensure" input:nil completion:^(BOOL ok, NSString *message) { [self refreshStatus]; }];
