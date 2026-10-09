@@ -35,11 +35,56 @@
 @implementation ChoiceProbe
 - (NSInteger)indexOfSelectedItem { return self.selection; }
 @end
+@interface ScheduleControlProbe : NSObject
+@property NSControlStateValue state;
+@property NSDate *dateValue;
+@end
+@implementation ScheduleControlProbe
+@end
+@interface ScheduleSaveProbe : ReminderController
+@property NSDictionary *submitted;
+@end
+@implementation ScheduleSaveProbe
+- (void)updateScheduleControls:(id)sender {}
+- (void)refreshStatus {}
+- (void)showMessage:(NSString *)message {}
+- (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
+    NSData *data = [NSData dataWithContentsOfFile:input];
+    self.submitted = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    completion(YES, @"saved");
+}
+@end
 static void Check(BOOL passed, NSString *message) {
     if (!passed) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
 int main(void) {
     @autoreleasepool {
+        ScheduleSaveProbe *scheduleSave = [[ScheduleSaveProbe alloc] init];
+        ScheduleControlProbe *weeklyMode = [[ScheduleControlProbe alloc] init];
+        scheduleSave.weeklyModeButton = (NSButton *)weeklyMode;
+        NSMutableArray *days = [NSMutableArray array], *starts = [NSMutableArray array], *ends = [NSMutableArray array];
+        for (NSUInteger index = 0; index < 5; index++) {
+            ScheduleControlProbe *day = [[ScheduleControlProbe alloc] init]; day.state = index == 2 ? NSControlStateValueOff : NSControlStateValueOn;
+            ScheduleControlProbe *start = [[ScheduleControlProbe alloc] init], *end = [[ScheduleControlProbe alloc] init];
+            start.dateValue = [[scheduleSave scheduleTimeFormatter:YES] dateFromString:@"2001-01-01 09:45"];
+            end.dateValue = [[scheduleSave scheduleTimeFormatter:YES] dateFromString:@"2001-01-01 18:45"];
+            [days addObject:day]; [starts addObject:start]; [ends addObject:end];
+        }
+        scheduleSave.weekdayButtons = days; scheduleSave.startPickers = starts; scheduleSave.endPickers = ends;
+        [scheduleSave saveSchedule:nil];
+        Check([scheduleSave.submitted isEqual:@{@"mode": @"outlook"}], @"Outlook saves without hidden weekly inputs");
+        puts("PASS: Outlook saves do not submit hidden weekday settings");
+        weeklyMode.state = NSControlStateValueOn; [scheduleSave saveSchedule:nil];
+        Check([scheduleSave.submitted[@"mode"] isEqual:@"weekly"], @"Weekly saves include the selected source");
+        NSArray *submittedDays = scheduleSave.submitted[@"weekdays"];
+        Check(submittedDays.count == 5, @"Weekly saves include five weekdays");
+        for (NSUInteger index = 0; index < 5; index++) {
+            NSDictionary *day = submittedDays[index];
+            Check(CFGetTypeID((__bridge CFTypeRef)day[@"enabled"]) == CFBooleanGetTypeID(), @"Weekday selections serialize as JSON booleans");
+            Check([day[@"enabled"] boolValue] == (index != 2), @"Checked and unchecked weekday selections are preserved");
+            Check([day[@"start"] isEqual:@"09:45"] && [day[@"end"] isEqual:@"18:45"], @"Weekly times use the validated HH:mm format");
+        }
+        puts("PASS: weekly saves preserve boolean selections and valid times");
         WindowProbe *window = [[WindowProbe alloc] init];
         NSApplication *application = (NSApplication *)[[NSObject alloc] init];
         RoutingProbe *routing = [[RoutingProbe alloc] init]; routing.received = [NSMutableArray array]; routing.window = (NSWindow *)window;

@@ -331,12 +331,16 @@ static void DrawReminderClock(NSRect bounds) {
     }];
 }
 - (void)saveSchedule:(id)sender {
-    NSMutableArray *days = [NSMutableArray array]; NSDateFormatter *formatter = [self scheduleTimeFormatter:NO];
-    for (NSUInteger index = 0; index < 5; index++) [days addObject:@{
-        @"day": @(index + 1), @"enabled": @(self.weekdayButtons[index].state == NSControlStateValueOn),
-        @"start": [formatter stringFromDate:self.startPickers[index].dateValue], @"end": [formatter stringFromDate:self.endPickers[index].dateValue]
-    }];
-    NSDictionary *schedule = @{@"mode": self.weeklyModeButton.state == NSControlStateValueOn ? @"weekly" : @"outlook", @"weekdays": days};
+    BOOL weekly = self.weeklyModeButton.state == NSControlStateValueOn;
+    NSMutableDictionary *schedule = [@{@"mode": weekly ? @"weekly" : @"outlook"} mutableCopy];
+    if (weekly) {
+        NSMutableArray *days = [NSMutableArray array]; NSDateFormatter *formatter = [self scheduleTimeFormatter:NO];
+        for (NSUInteger index = 0; index < 5; index++) [days addObject:@{
+            @"day": @(index + 1), @"enabled": self.weekdayButtons[index].state == NSControlStateValueOn ? @YES : @NO,
+            @"start": [formatter stringFromDate:self.startPickers[index].dateValue], @"end": [formatter stringFromDate:self.endPickers[index].dateValue]
+        }];
+        schedule[@"weekdays"] = days;
+    }
     NSData *data = [NSJSONSerialization dataWithJSONObject:schedule options:0 error:nil];
     NSString *temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-schedule-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     int descriptor = open(temporary.fileSystemRepresentation, O_WRONLY|O_CREAT|O_EXCL, 0600);

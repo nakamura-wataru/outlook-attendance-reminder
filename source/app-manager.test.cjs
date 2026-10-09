@@ -58,6 +58,22 @@ test('mode changes preserve the Outlook link, weekday times, and notification hi
   assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), state);
   assert.equal(f.manager.schedule().weekdays[3].end, '20:00'); assert.equal(f.fetches.length, 1);
 });
+test('Outlook saves without weekday inputs and keeps the previously saved weekly settings', async t => {
+  const f = fixture(t); await f.manager.configure(f.input());
+  const weekly = { ...defaultSchedule(), mode: 'weekly' };
+  weekly.weekdays[1].end = '20:00'; weekly.weekdays[2].enabled = false;
+  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
+  const config = fs.readFileSync(path.join(f.root, 'config.json'));
+  for (const value of [{ mode: 'outlook' }, { mode: 'outlook', weekdays: [{ enabled: 1, start: 'invalid' }] }]) {
+    const input = f.input(JSON.stringify(value));
+    assert.match(f.manager.configureSchedule(input), /Outlook/);
+    assert.equal(fs.existsSync(input), false);
+    assert.deepEqual(f.manager.schedule(), { ...weekly, mode: 'outlook' });
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'config.json')), config);
+    assert.equal(f.manager.enabled(), true);
+  }
+  assert.equal(f.fetches.length, 1);
+});
 test('invalid weekly settings and startup failures preserve the previous valid schedule', t => {
   const f = fixture(t), weekly = { ...defaultSchedule(), mode: 'weekly' };
   f.manager.configureSchedule(f.input(JSON.stringify(weekly)));

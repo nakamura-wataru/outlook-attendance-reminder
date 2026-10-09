@@ -153,7 +153,7 @@ function createManager(options = {}) {
     catch { throw new UiError('週間予定を読み取れませんでした。もう一度設定してください。'); }
     finally { if (inputFile) fs.rmSync(inputFile, { force: true }); }
     let schedule;
-    try { schedule = validateSchedule(value); }
+    try { schedule = validateSchedule(value?.mode === 'outlook' ? { ...readSchedule(root), mode: 'outlook' } : value); }
     catch (error) { throw new UiError(error.message); }
     if (schedule.mode === 'outlook' && !outlookConfigured()) throw new UiError('先に「OutlookのICSリンクを設定」から予定表を登録してください。');
     const previous = fs.existsSync(schedulePath) ? fs.readFileSync(schedulePath) : null;
