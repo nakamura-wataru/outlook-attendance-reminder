@@ -81,6 +81,9 @@ static void DrawReminderClock(NSRect bounds) {
 @property NSArray<NSDatePicker *> *startPickers;
 @property NSArray<NSDatePicker *> *endPickers;
 @property BOOL scheduleBusy;
+@property NSStackView *scheduleLayout;
+@property NSView *weeklySettingsCard;
+@property NSTextField *scheduleHint;
 @end
 
 @implementation ReminderController
@@ -122,7 +125,7 @@ static void DrawReminderClock(NSRect bounds) {
             self.statusBadge.stringValue = enabledOK && [value isEqualToString:@"yes"] ? @"● お知らせ中" : ([text hasPrefix:@"予定表：未設定"] ? @"○ 未設定" : @"○ 停止中");
             [self runCommand:@"can-migrate" input:nil completion:^(BOOL migrationOK, NSString *canMigrate) {
                 self.migrationButton.hidden = !(migrationOK && [canMigrate isEqualToString:@"yes"]);
-                [self.window setContentSize:NSMakeSize(560, self.migrationButton.hidden ? 536 : 600)];
+                [self.window setContentSize:NSMakeSize(560, self.migrationButton.hidden ? 512 : 576)];
             }];
         }];
     }];
@@ -165,7 +168,6 @@ static void DrawReminderClock(NSRect bounds) {
     NSStackView *stack = [self verticalStack:8];
     [stack addArrangedSubview:[self label:arrival ? @"出勤のお知らせ" : @"退勤のお知らせ" size:15 strong:YES muted:NO]];
     [stack addArrangedSubview:[self label:arrival ? @"予定の5分前" : @"予定時刻になったら" size:18 strong:YES muted:NO]];
-    [stack addArrangedSubview:[self label:arrival ? @"「出社」「出勤」に対応" : @"「退社」「退勤」に対応" size:13 strong:NO muted:YES]];
     return [self card:stack];
 }
 - (void)showManager {
@@ -257,6 +259,9 @@ static void DrawReminderClock(NSRect bounds) {
 }
 - (void)updateScheduleControls:(id)sender {
     BOOL weekly = self.weeklyModeButton.state == NSControlStateValueOn;
+    self.outlookSettingsButton.hidden = weekly;
+    self.weeklySettingsCard.hidden = !weekly;
+    self.scheduleHint.stringValue = weekly ? @"出勤は予定の5分前、退勤は予定時刻に通知します。\n週間予定は日本時間で、チェックした曜日に毎週繰り返します。" : @"出勤は予定の5分前、退勤は予定時刻に通知します。";
     self.outlookModeButton.enabled = !self.scheduleBusy; self.weeklyModeButton.enabled = !self.scheduleBusy;
     self.outlookSettingsButton.enabled = !weekly && !self.scheduleBusy; self.scheduleSaveButton.enabled = !self.scheduleBusy;
     for (NSUInteger index = 0; index < self.weekdayButtons.count; index++) {
@@ -264,13 +269,15 @@ static void DrawReminderClock(NSRect bounds) {
         BOOL enabled = day.enabled && day.state == NSControlStateValueOn;
         self.startPickers[index].enabled = enabled; self.endPickers[index].enabled = enabled;
     }
+    [self.scheduleWindow.contentView layoutSubtreeIfNeeded];
+    [self.scheduleWindow setContentSize:NSMakeSize(560, ceil(self.scheduleLayout.fittingSize.height + 48))];
 }
 - (void)configureSchedule:(id)sender {
     if (!self.scheduleWindow) {
         self.scheduleWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,536) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
         self.scheduleWindow.title = @"通知の予定を設定"; self.scheduleWindow.releasedWhenClosed = NO; [self.scheduleWindow center];
         ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.scheduleWindow.contentView = background;
-        NSStackView *stack = [self verticalStack:16]; [self.scheduleWindow.contentView addSubview:stack];
+        NSStackView *stack = [self verticalStack:16]; self.scheduleLayout = stack; stack.detachesHiddenViews = YES; [self.scheduleWindow.contentView addSubview:stack];
         [NSLayoutConstraint activateConstraints:@[
             [stack.leadingAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.leadingAnchor constant:24],
             [stack.trailingAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.trailingAnchor constant:-24],
@@ -299,8 +306,9 @@ static void DrawReminderClock(NSRect bounds) {
             [weekly addArrangedSubview:row]; [days addObject:day]; [starts addObject:start]; [ends addObject:end];
         }
         self.weekdayButtons = days; self.startPickers = starts; self.endPickers = ends;
-        NSView *card = [self card:weekly]; [stack addArrangedSubview:card]; [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-        [stack addArrangedSubview:[self label:@"出勤は予定の5分前、退勤は予定時刻に通知します。\n週間予定は日本時間で、チェックした曜日に毎週繰り返します。" size:12 strong:NO muted:YES]];
+        self.weeklySettingsCard = [self card:weekly]; [stack addArrangedSubview:self.weeklySettingsCard]; [self.weeklySettingsCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        self.scheduleHint = [self label:@"" size:12 strong:NO muted:YES]; [stack addArrangedSubview:self.scheduleHint];
+        [self.scheduleHint.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         self.scheduleSaveButton = [self button:@"保存して開始" selector:@selector(saveSchedule:)]; [self.buttons removeObject:self.scheduleSaveButton];
         [stack addArrangedSubview:self.scheduleSaveButton];
     }
