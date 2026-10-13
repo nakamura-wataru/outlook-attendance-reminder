@@ -6,10 +6,10 @@ macOS 11以降のAppleシリコン・Intel Macに対応しています。
 
 ## インストール
 
-ターミナルで次を実行してください。リポジトリにアクセスできるGitHubアカウントが必要です。
+ターミナルで次を実行してください。GitHubアカウントは不要です。
 
 ```sh
-git clone git@github.com:ibj-labo/outlook-attendance-reminder.git
+git clone https://github.com/nakamura-wataru/outlook-attendance-reminder.git
 cd outlook-attendance-reminder
 bash install.command
 ```
