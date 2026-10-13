@@ -1,41 +1,5 @@
-const { createHash } = require('node:crypto');
 const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' });
-
-function text(value) {
-  return typeof value === 'string' ? value : value?.val ?? '';
-}
-
-function attendanceKind(subject) {
-  const normalized = text(subject).normalize('NFKC').replace(/[\s【】\[\]()]/gu, '');
-  const match = /^(?:\d{1,2}:\d{2})?(出社|出勤|退社|退勤)(?:\d{1,2}:\d{2})?$/u.exec(normalized);
-  return match ? (['出社', '出勤'].includes(match[1]) ? 'start' : 'end') : null;
-}
-
-function targetsFromCalendar(data, ical, now = new Date()) {
-  const targets = new Map();
-  const from = new Date(now.getTime() - 86400000);
-  const to = new Date(now.getTime() + 8 * 86400000);
-  for (const event of Object.values(data)) {
-    if (event?.type !== 'VEVENT') continue;
-    for (const instance of ical.expandRecurringEvent(event, { from, to, expandOngoing: true })) {
-      const kind = attendanceKind(instance.summary);
-      if (!kind || instance.isFullDay || text(instance.event.status).toUpperCase() === 'CANCELLED' || text(event.status).toUpperCase() === 'CANCELLED') continue;
-      let planned = instance.start;
-      // In this calendar, arrival blocks run from midnight to the arrival time.
-      if (kind === 'start' && timeFormat.format(instance.start) === '00:00:00') {
-        if (dateFormat.format(instance.start) !== dateFormat.format(instance.end)) continue;
-        planned = instance.end;
-      }
-      if (!Number.isFinite(planned.getTime()) || timeFormat.format(planned) === '00:00:00') continue;
-      const due = new Date(planned.getTime() - (kind === 'start' ? 5 * 60000 : 0));
-      if (planned < from || planned > to) continue;
-      const id = createHash('sha256').update(`${event.uid}\n${kind}\n${planned.toISOString()}`).digest('hex');
-      targets.set(id, { id, kind, subject: text(instance.summary), plannedAt: planned.toISOString(), dueAt: due.toISOString() });
-    }
-  }
-  return [...targets.values()].sort((a, b) => a.dueAt.localeCompare(b.dueAt));
-}
 
 function dueTargets(targets, notified, now = new Date()) {
   return targets.filter(target => {
@@ -68,4 +32,4 @@ function nextReminder(targets, notified, now = new Date()) {
   return upcoming[0] || null;
 }
 
-module.exports = { attendanceKind, targetsFromCalendar, dueTargets, reminderMessage, nextReminder };
+module.exports = { dueTargets, reminderMessage, nextReminder };

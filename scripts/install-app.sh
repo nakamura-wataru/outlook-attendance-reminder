@@ -39,9 +39,5 @@ fi
 /usr/bin/tar -xzf "$reminder_archive" -C "$reminder_cache"
 export PATH="$reminder_runtime/bin:$PATH"
 cd "$reminder_project"
-if [[ "${1:-}" != --dependencies-ready ]]; then
-  "$reminder_runtime/bin/node" "$reminder_runtime/lib/node_modules/npm/bin/npm-cli.js" ci --ignore-scripts --omit=dev --no-audit --no-fund --cache "$reminder_project/.cache/npm"
-else
-  shift
-fi
+if [[ "${1:-}" == --dependencies-ready ]]; then shift; fi
 exec "$reminder_runtime/bin/node" "$reminder_project/scripts/install-app.cjs" --runtime "$reminder_runtime" --arch "$reminder_arch" "$@"

@@ -4,10 +4,10 @@ const { createHash } = require('node:crypto');
 const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' });
 
 function defaultSchedule() {
-  return { mode: 'outlook', weekdays: [1, 2, 3, 4, 5].map(day => ({ day, enabled: true, start: '09:45', end: '18:45' })) };
+  return { mode: 'weekly', weekdays: [1, 2, 3, 4, 5].map(day => ({ day, enabled: true, start: '09:45', end: '18:45' })) };
 }
 function validateSchedule(value) {
-  if (!value || !['outlook', 'weekly'].includes(value.mode) || !Array.isArray(value.weekdays) || value.weekdays.length !== 5) throw new Error('通知元と月〜金の予定を設定してください。');
+  if (!value || value.mode !== 'weekly' || !Array.isArray(value.weekdays) || value.weekdays.length !== 5) throw new Error('月〜金の出勤・退勤時刻を設定してください。');
   const weekdays = [1, 2, 3, 4, 5].map(day => {
     const matches = value.weekdays.filter(row => row?.day === day);
     const row = matches[0];
@@ -21,7 +21,9 @@ function readSchedule(root) {
   let raw;
   try { raw = fs.readFileSync(path.join(root, 'schedule.json'), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return defaultSchedule(); throw error; }
-  return validateSchedule(JSON.parse(raw));
+  const value = JSON.parse(raw);
+  // Retain saved weekday times from older versions without using their link.
+  return validateSchedule(value.mode === 'outlook' ? { ...value, mode: 'weekly' } : value);
 }
 function weeklyTargets(value, now = new Date()) {
   const schedule = validateSchedule(value);

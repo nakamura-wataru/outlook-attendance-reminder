@@ -2,35 +2,7 @@
 #import <WebKit/WebKit.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-static BOOL ReminderDarkAppearance(void) {
-    return [[[NSAppearance currentDrawingAppearance] bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] isEqualToString:NSAppearanceNameDarkAqua];
-}
-static NSColor *ReminderColor(NSString *token) {
-    NSDictionary *light = @{ @"canvas": @0xffffff, @"surface": @0xf7f8fa, @"hairline": @0xe4e6ec, @"ink": @0x14161c, @"ink-mute": @0x565d6d, @"primary": @0x4f46e5, @"primary-soft": @0xeef0fe };
-    NSDictionary *dark = @{ @"canvas": @0x0e1015, @"surface": @0x161922, @"hairline": @0x262a34, @"ink": @0xe9ebf0, @"ink-mute": @0x99a0ae, @"primary": @0x7b84ff, @"primary-soft": @0x1c2040 };
-    unsigned int rgb = [(ReminderDarkAppearance() ? dark : light)[token] unsignedIntValue];
-    return [NSColor colorWithSRGBRed:((rgb >> 16) & 255) / 255.0 green:((rgb >> 8) & 255) / 255.0 blue:(rgb & 255) / 255.0 alpha:1];
-}
-static void DrawReminderClock(NSRect bounds) {
-    CGFloat size = MIN(bounds.size.width, bounds.size.height);
-    CGFloat x = NSMidX(bounds) - size / 2, y = NSMidY(bounds) - size / 2;
-    [ReminderColor(@"primary-soft") setFill];
-    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, size, size)] fill];
-    NSRect face = NSMakeRect(x + size * .12, y + size * .12, size * .76, size * .76);
-    [ReminderColor(@"canvas") setFill];
-    NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:face]; [circle fill];
-    [ReminderColor(@"primary") setStroke]; circle.lineWidth = size * .035; [circle stroke];
-    NSBezierPath *hands = [NSBezierPath bezierPath]; hands.lineWidth = size * .045; hands.lineCapStyle = NSLineCapStyleRound;
-    [hands moveToPoint:NSMakePoint(x + size * .5, y + size * .69)];
-    [hands lineToPoint:NSMakePoint(x + size * .5, y + size * .52)];
-    [hands lineToPoint:NSMakePoint(x + size * .65, y + size * .60)]; [hands stroke];
-    [ReminderColor(@"ink") setFill];
-    for (NSNumber *position in @[@.36, @.60]) [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x + size * position.doubleValue, y + size * .39, size * .045, size * .06)] fill];
-    NSBezierPath *smile = [NSBezierPath bezierPath]; smile.lineWidth = size * .025; smile.lineCapStyle = NSLineCapStyleRound;
-    [ReminderColor(@"primary") setStroke]; [smile moveToPoint:NSMakePoint(x + size * .42, y + size * .32)];
-    [smile curveToPoint:NSMakePoint(x + size * .58, y + size * .32) controlPoint1:NSMakePoint(x + size * .45, y + size * .25) controlPoint2:NSMakePoint(x + size * .55, y + size * .25)]; [smile stroke];
-}
+#import "reminder-artwork.h"
 @interface ReminderCard : NSView
 @property BOOL canvas;
 @end
@@ -63,7 +35,6 @@ static void DrawReminderClock(NSRect bounds) {
 @property BOOL overviewPendingRefresh;
 @property NSUInteger overviewRevision;
 @property NSButton *toggleButton;
-@property NSButton *migrationButton;
 @property NSMutableArray<NSButton *> *buttons;
 @property BOOL notificationMode;
 @property NSString *kind;
@@ -82,9 +53,6 @@ static void DrawReminderClock(NSRect bounds) {
 @property WKWebView *recorderWebView;
 @property NSTextField *recorderStatus;
 @property NSWindow *scheduleWindow;
-@property NSButton *outlookModeButton;
-@property NSButton *weeklyModeButton;
-@property NSButton *outlookSettingsButton;
 @property NSButton *scheduleSaveButton;
 @property NSArray<NSButton *> *weekdayButtons;
 @property NSArray<NSDatePicker *> *startPickers;
@@ -158,26 +126,9 @@ static void DrawReminderClock(NSRect bounds) {
 }
 - (void)applyOverview:(NSDictionary *)view {
     BOOL configured = [view[@"configured"] boolValue], enabled = [view[@"enabled"] boolValue];
-    NSString *connection = view[@"connection"];
     self.toggleButton.title = enabled ? @"通知を停止" : @"通知を再開";
-    self.migrationButton.hidden = ![view[@"canMigrate"] boolValue];
-    NSString *checked = [self overviewDate:view[@"fetchedAt"] format:@"M月d日 H:mm"];
-    if (!configured) {
-        self.statusBadge.stringValue = @"○ 予定はまだ未設定です";
-        self.statusLabel.stringValue = @"「通知の予定を設定」から始めましょう。";
-    } else if ([connection isEqualToString:@"weekly"]) {
-        self.statusBadge.stringValue = @"● 週間予定を設定済み";
-        self.statusLabel.stringValue = @"選んだ曜日の出勤・退勤時刻に合わせてお知らせします。";
-    } else if ([connection isEqualToString:@"connected"]) {
-        self.statusBadge.stringValue = @"● Outlookと接続済み";
-        self.statusLabel.stringValue = [@"予定表の最終確認：" stringByAppendingString:checked];
-    } else if ([connection isEqualToString:@"cached"]) {
-        self.statusBadge.stringValue = @"△ Outlookに再接続しています";
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"前回取得した予定でお知らせします。最終確認：%@", checked];
-    } else {
-        self.statusBadge.stringValue = @"△ Outlookに接続できませんでした";
-        self.statusLabel.stringValue = @"ネットワークやICSリンクを確認して「予定を更新」を押してください。";
-    }
+    self.statusBadge.stringValue = configured ? @"● 週間予定を設定済み" : @"○ 予定はまだ未設定です";
+    self.statusLabel.stringValue = configured ? @"選んだ曜日の出勤・退勤時刻に合わせてお知らせします。" : @"「通知の予定を設定」から始めましょう。";
     NSDictionary *next = [view[@"nextReminder"] isKindOfClass:NSDictionary.class] ? view[@"nextReminder"] : nil;
     self.nextReminderDate.hidden = !next; self.nextReminderDetail.hidden = !next;
     if (next) {
@@ -186,7 +137,7 @@ static void DrawReminderClock(NSRect bounds) {
         self.nextReminderDate.stringValue = [self overviewDate:next[@"dueAt"] format:@"M月d日（EEE）H:mm"];
         self.nextReminderDetail.stringValue = [NSString stringWithFormat:@"%@予定 %@%@", arrival ? @"出勤" : @"退勤", [self overviewDate:next[@"plannedAt"] format:@"H:mm"], arrival ? @" の5分前" : @" になったら"];
     } else {
-        self.nextReminderTitle.stringValue = !configured ? @"次のお知らせは、設定後に表示します" : !enabled ? @"お知らせはお休み中です" : [connection isEqualToString:@"failed"] ? @"次のお知らせを確認できませんでした" : @"向こう8日間に出勤・退勤の予定はありません";
+        self.nextReminderTitle.stringValue = !configured ? @"次のお知らせは、設定後に表示します" : !enabled ? @"お知らせはお休み中です" : @"向こう8日間に出勤・退勤の予定はありません";
         if (configured && !enabled) self.statusLabel.stringValue = @"通知は停止中です。「通知を再開」から再開できます。";
     }
     [self updateManagerLayout];
@@ -216,16 +167,6 @@ static void DrawReminderClock(NSRect bounds) {
     if (self.window.visible && !self.window.attachedSheet && !self.scheduleWindow.visible) [self refreshOverview:NO];
 }
 - (void)refreshCalendar:(id)sender { [self refreshStatus]; }
-- (NSString *)calendarConfigurationRoot {
-    return NSProcessInfo.processInfo.environment[@"ATTENDANCE_REMINDER_ROOT"] ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/OutlookAttendanceReminder"];
-}
-- (NSString *)savedCalendarLink {
-    NSData *data = [NSData dataWithContentsOfFile:[[self calendarConfigurationRoot] stringByAppendingPathComponent:@"config.json"]];
-    NSDictionary *config = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    if (![config isKindOfClass:NSDictionary.class] || ![config[@"icsUrl"] isKindOfClass:NSString.class]) return @"";
-    NSURL *url = [NSURL URLWithString:config[@"icsUrl"]];
-    return [url.scheme.lowercaseString isEqualToString:@"https"] && !url.user.length && !url.password.length ? config[@"icsUrl"] : @"";
-}
 - (NSButton *)button:(NSString *)title selector:(SEL)selector {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:selector];
     button.bezelStyle = NSBezelStyleRounded; button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -308,47 +249,19 @@ static void DrawReminderClock(NSRect bounds) {
     NSStackView *schedule = [NSStackView stackViewWithViews:@[[self scheduleCard:YES], [self scheduleCard:NO]]];
     schedule.spacing = 16; schedule.distribution = NSStackViewDistributionFillEqually; schedule.alignment = NSLayoutAttributeTop;
     [stack addArrangedSubview:schedule]; [schedule.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"Outlookの予定表か、曜日ごとの出勤・退勤時刻を選びます";
+    NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"曜日ごとの出勤・退勤時刻を設定します";
     NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知内のKING OF TIMEと再通知の選択肢を確認します。再通知は予約しません";
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
     NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
     self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"通知の停止・再開は、Macを再起動しても維持されます";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
-    NSButton *refresh = [self button:@"予定を更新" selector:@selector(refreshCalendar:)]; refresh.toolTip = @"Outlookとの接続と、次のお知らせをもう一度確認します";
+    NSButton *refresh = [self button:@"予定を更新" selector:@selector(refreshCalendar:)]; refresh.toolTip = @"保存した週間予定と、次のお知らせをもう一度確認します";
     NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, refresh, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
-    self.migrationButton = [self button:@"既存の設定を引き継ぐ" selector:@selector(migrate:)]; self.migrationButton.hidden = YES; [stack addArrangedSubview:self.migrationButton];
-    [NSApp setApplicationIconImage:[self clockImage]];
+    NSImage *appIcon = [[NSImage alloc] initWithContentsOfFile:[[self resources] stringByAppendingPathComponent:@"AppIcon.icns"]];
+    [NSApp setApplicationIconImage:appIcon ?: [self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
     [self runCommand:@"ensure" input:nil completion:^(BOOL ok, NSString *message) { [self refreshStatus]; }];
     self.overviewTimer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(refreshOverviewTimer:) userInfo:nil repeats:YES];
-}
-- (void)configure:(id)sender {
-    NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"予定表の設定";
-    alert.icon = [self clockImage];
-    NSString *savedLink = [self savedCalendarLink];
-    alert.informativeText = savedLink.length ? @"登録済みのICSリンクです。変更する場合は、新しいリンクに貼り替えてください。" : @"自分のOutlook予定表のICSリンクを入力してください。リンクは自分のMacにだけ保存します。";
-    NSSecureTextField *field = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,360,26)];
-    field.usesSingleLineMode = YES; [(NSTextFieldCell *)field.cell setScrollable:YES];
-    field.stringValue = savedLink; field.accessibilityLabel = @"OutlookのICSリンク";
-    field.placeholderString = @"https://…"; alert.accessoryView = field;
-    [alert addButtonWithTitle:@"設定"]; [alert addButtonWithTitle:@"キャンセル"];
-    [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:^(NSModalResponse response) {
-        if (response != NSAlertFirstButtonReturn) return;
-        NSString *temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-calendar-" stringByAppendingString:NSUUID.UUID.UUIDString]];
-        int descriptor = open(temporary.fileSystemRepresentation, O_WRONLY|O_CREAT|O_EXCL, 0600);
-        if (descriptor < 0) { [self showMessage:@"設定を保存する準備ができませんでした。"]; return; }
-        NSData *data = [field.stringValue dataUsingEncoding:NSUTF8StringEncoding];
-        const uint8_t *bytes = data.bytes; NSUInteger written = 0;
-        while (written < data.length) { ssize_t count = write(descriptor, bytes + written, data.length - written); if (count <= 0) break; written += (NSUInteger)count; }
-        close(descriptor);
-        if (written != data.length) { unlink(temporary.fileSystemRepresentation); [self showMessage:@"リンクを保存できませんでした。"]; return; }
-        self.statusLabel.stringValue = @"予定表への接続を確認しています…";
-        [self runCommand:@"configure" input:temporary completion:^(BOOL ok, NSString *message) {
-            unlink(temporary.fileSystemRepresentation);
-            if (ok && self.scheduleWindow) { self.outlookModeButton.state = NSControlStateValueOn; self.weeklyModeButton.state = NSControlStateValueOff; [self updateScheduleControls:nil]; }
-            [self showMessage:message]; [self refreshStatus];
-        }];
-    }];
 }
 - (NSDateFormatter *)scheduleTimeFormatter:(BOOL)includeDate {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init]; formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
@@ -364,20 +277,11 @@ static void DrawReminderClock(NSRect bounds) {
     [NSLayoutConstraint activateConstraints:@[[picker.widthAnchor constraintEqualToConstant:128], [picker.heightAnchor constraintEqualToConstant:30]]];
     return picker;
 }
-- (void)chooseScheduleSource:(NSButton *)sender {
-    self.outlookModeButton.state = sender == self.outlookModeButton ? NSControlStateValueOn : NSControlStateValueOff;
-    self.weeklyModeButton.state = sender == self.weeklyModeButton ? NSControlStateValueOn : NSControlStateValueOff;
-    [self updateScheduleControls:nil];
-}
 - (void)updateScheduleControls:(id)sender {
-    BOOL weekly = self.weeklyModeButton.state == NSControlStateValueOn;
-    self.outlookSettingsButton.hidden = weekly;
-    self.weeklySettingsCard.hidden = !weekly;
-    self.scheduleHint.stringValue = weekly ? @"出勤は予定の5分前、退勤は予定時刻に通知します。\n週間予定は日本時間で、チェックした曜日に毎週繰り返します。" : @"出勤は予定の5分前、退勤は予定時刻に通知します。";
-    self.outlookModeButton.enabled = !self.scheduleBusy; self.weeklyModeButton.enabled = !self.scheduleBusy;
-    self.outlookSettingsButton.enabled = !weekly && !self.scheduleBusy; self.scheduleSaveButton.enabled = !self.scheduleBusy;
+    self.scheduleHint.stringValue = @"出勤は予定の5分前、退勤は予定時刻に通知します。\n日本時間で、チェックした曜日に毎週繰り返します。";
+    self.scheduleSaveButton.enabled = !self.scheduleBusy;
     for (NSUInteger index = 0; index < self.weekdayButtons.count; index++) {
-        NSButton *day = self.weekdayButtons[index]; day.enabled = weekly && !self.scheduleBusy;
+        NSButton *day = self.weekdayButtons[index]; day.enabled = !self.scheduleBusy;
         BOOL enabled = day.enabled && day.state == NSControlStateValueOn;
         self.startPickers[index].enabled = enabled; self.endPickers[index].enabled = enabled;
     }
@@ -396,13 +300,7 @@ static void DrawReminderClock(NSRect bounds) {
             [stack.topAnchor constraintEqualToAnchor:self.scheduleWindow.contentView.topAnchor constant:24],
             [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.scheduleWindow.contentView.bottomAnchor constant:-24]
         ]];
-        [stack addArrangedSubview:[self label:@"通知に使う予定を選んでください" size:18 strong:YES muted:NO]];
-        self.outlookModeButton = [NSButton radioButtonWithTitle:@"Outlookの予定表" target:self action:@selector(chooseScheduleSource:)];
-        self.weeklyModeButton = [NSButton radioButtonWithTitle:@"週間予定（月〜金）" target:self action:@selector(chooseScheduleSource:)];
-        self.outlookModeButton.font = self.weeklyModeButton.font = [NSFont systemFontOfSize:14];
-        NSStackView *modes = [NSStackView stackViewWithViews:@[self.outlookModeButton, self.weeklyModeButton]]; modes.spacing = 24; [stack addArrangedSubview:modes];
-        self.outlookSettingsButton = [self button:@"OutlookのICSリンクを設定" selector:@selector(configure:)]; [self.buttons removeObject:self.outlookSettingsButton];
-        self.outlookSettingsButton.toolTip = @"Outlookの予定表を使う場合、自分のICSリンクを登録します"; [stack addArrangedSubview:self.outlookSettingsButton];
+        [stack addArrangedSubview:[self label:@"月〜金の出勤・退勤時刻" size:18 strong:YES muted:NO]];
         NSStackView *weekly = [self verticalStack:12];
         NSTextField *dayHeader = [self label:@"通知する曜日" size:13 strong:YES muted:YES]; [dayHeader.widthAnchor constraintEqualToConstant:96].active = YES;
         NSTextField *startHeader = [self label:@"出勤予定" size:13 strong:YES muted:YES]; [startHeader.widthAnchor constraintEqualToConstant:128].active = YES;
@@ -430,8 +328,6 @@ static void DrawReminderClock(NSRect bounds) {
         self.scheduleBusy = NO;
         NSDictionary *schedule = ok ? [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
         if ([schedule isKindOfClass:NSDictionary.class]) {
-            BOOL weekly = [schedule[@"mode"] isEqual:@"weekly"];
-            self.outlookModeButton.state = weekly ? NSControlStateValueOff : NSControlStateValueOn; self.weeklyModeButton.state = weekly ? NSControlStateValueOn : NSControlStateValueOff;
             NSArray *rows = schedule[@"weekdays"];
             if ([rows isKindOfClass:NSArray.class] && rows.count == 5) for (NSUInteger index = 0; index < 5; index++) {
                 NSDictionary *row = rows[index]; self.weekdayButtons[index].state = [row[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
@@ -443,16 +339,12 @@ static void DrawReminderClock(NSRect bounds) {
     }];
 }
 - (void)saveSchedule:(id)sender {
-    BOOL weekly = self.weeklyModeButton.state == NSControlStateValueOn;
-    NSMutableDictionary *schedule = [@{@"mode": weekly ? @"weekly" : @"outlook"} mutableCopy];
-    if (weekly) {
-        NSMutableArray *days = [NSMutableArray array]; NSDateFormatter *formatter = [self scheduleTimeFormatter:NO];
-        for (NSUInteger index = 0; index < 5; index++) [days addObject:@{
-            @"day": @(index + 1), @"enabled": self.weekdayButtons[index].state == NSControlStateValueOn ? @YES : @NO,
-            @"start": [formatter stringFromDate:self.startPickers[index].dateValue], @"end": [formatter stringFromDate:self.endPickers[index].dateValue]
-        }];
-        schedule[@"weekdays"] = days;
-    }
+    NSMutableArray *days = [NSMutableArray array]; NSDateFormatter *formatter = [self scheduleTimeFormatter:NO];
+    for (NSUInteger index = 0; index < 5; index++) [days addObject:@{
+        @"day": @(index + 1), @"enabled": self.weekdayButtons[index].state == NSControlStateValueOn ? @YES : @NO,
+        @"start": [formatter stringFromDate:self.startPickers[index].dateValue], @"end": [formatter stringFromDate:self.endPickers[index].dateValue]
+    }];
+    NSDictionary *schedule = @{@"mode": @"weekly", @"weekdays": days};
     NSData *data = [NSJSONSerialization dataWithJSONObject:schedule options:0 error:nil];
     NSString *temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"attendance-schedule-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     int descriptor = open(temporary.fileSystemRepresentation, O_WRONLY|O_CREAT|O_EXCL, 0600);
@@ -474,9 +366,6 @@ static void DrawReminderClock(NSRect bounds) {
         if (ok && [command isEqualToString:@"stop"]) for (ReminderController *notification in self.notifications.allValues) [notification closeNotification:nil];
         [self showMessage:message]; [self refreshStatus];
     }];
-}
-- (void)migrate:(id)sender {
-    [self runCommand:@"migrate" input:nil completion:^(BOOL ok, NSString *message) { [self showMessage:message]; [self refreshStatus]; }];
 }
 - (NSUserDefaults *)recorderPreferences { return [[NSUserDefaults alloc] initWithSuiteName:@"com.outlook-attendance-reminder.recorder"]; }
 - (NSURL *)recorderURL {
@@ -594,7 +483,7 @@ static void DrawReminderClock(NSRect bounds) {
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"「通知の予定を設定」で、Outlookの予定表か週間予定を選べます。\n\n週間予定では、月〜金それぞれの出勤・退勤時刻と通知する曜日を設定して「保存して開始」を押してください。出勤は5分前、退勤は予定時刻に通知します。\n\nOutlookでは、Web版の設定 → 予定表 → 共有の予定表 → 予定表の公開から、タイトルが見えるICSリンクを取得して設定します。出社・出勤・退社・退勤の予定に対応します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";

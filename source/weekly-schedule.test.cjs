@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { defaultSchedule, validateSchedule, weeklyTargets } = require('./weekly-schedule.cjs');
 const { dueTargets } = require('./calendar-core.cjs');
-const { refreshTargets } = require('./calendar-reminder.cjs');
 const now = new Date('2026-10-05T09:40:00+09:00');
 const weekly = () => ({ ...defaultSchedule(), mode: 'weekly' });
 
@@ -44,30 +43,4 @@ test('weekly schedules reject invalid hours, duplicate days, missing days, and n
   const missing = weekly(); missing.weekdays.pop(); assert.throws(() => validateSchedule(missing));
   const unchecked = weekly(); unchecked.weekdays.forEach(row => { row.enabled = false; }); assert.throws(() => validateSchedule(unchecked));
   assert.throws(() => validateSchedule({ ...weekly(), mode: 'both' }));
-});
-test('weekly mode works offline, ignores old Outlook targets, and keeps notification history', async () => {
-  const state = { source: 'outlook', targets: [{ id: 'old-outlook' }], notified: { previous: 123 }, fetchedAt: now.getTime() };
-  let fetches = 0;
-  const result = await refreshTargets(state, weekly(), now, async () => { fetches++; throw new Error('Offline'); });
-  assert.equal(fetches, 0); assert.equal(result.state.source, 'weekly');
-  assert.deepEqual(result.state.notified, state.notified);
-  assert.ok(result.state.targets.every(target => target.id !== 'old-outlook'));
-  const changed = weekly(); changed.weekdays[0].end = '20:00';
-  const updated = await refreshTargets(result.state, changed, now);
-  assert.ok(updated.state.targets.some(target => target.kind === 'end' && target.plannedAt === '2026-10-05T11:00:00.000Z'));
-});
-test('switching to Outlook never falls back to a fresh weekly cache when Outlook is unavailable', async () => {
-  const state = { source: 'weekly', targets: weeklyTargets(weekly(), now), notified: {}, fetchedAt: now.getTime() };
-  let fetches = 0;
-  const result = await refreshTargets(state, defaultSchedule(), now, async () => { fetches++; throw new Error('Offline'); });
-  assert.equal(fetches, 1); assert.equal(result.stale, true); assert.deepEqual(result.state.targets, []);
-});
-test('Outlook retains its bounded cached-calendar behavior', async () => {
-  let fetches = 0; const fail = async () => { fetches++; throw new Error('Offline'); };
-  const state = { source: 'outlook', targets: [{ id: 'outlook' }], notified: {}, fetchedAt: now.getTime() - 60000 };
-  assert.equal((await refreshTargets(state, defaultSchedule(), now, fail)).state, state); assert.equal(fetches, 0);
-  state.fetchedAt = now.getTime() - 10 * 60000;
-  const cached = await refreshTargets(state, defaultSchedule(), now, fail); assert.equal(cached.stale, false); assert.deepEqual(cached.state.targets, state.targets);
-  state.fetchedAt = now.getTime() - 16 * 60000;
-  assert.equal((await refreshTargets(state, defaultSchedule(), now, fail)).stale, true);
 });

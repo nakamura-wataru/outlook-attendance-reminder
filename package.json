@@ -1,17 +1,14 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "private": true,
-  "description": "Outlookまたは月〜金の週間予定から打刻を促すMacアプリ",
-  "engines": { "node": ">=22" },
-  "os": ["darwin"],
-  "dependencies": { "node-ical": "0.27.1" },
-  "overrides": {
-    "rrule-temporal": "2.0.2",
-    "temporal-polyfill": "1.0.2",
-    "temporal-spec": "1.0.1",
-    "temporal-utils": "1.0.1"
+  "description": "月〜金の週間予定から打刻を促すMacアプリ",
+  "engines": {
+    "node": ">=22"
   },
+  "os": [
+    "darwin"
+  ],
   "scripts": {
     "postinstall": "bash scripts/install-app.sh --dependencies-ready",
     "install:app": "bash install.command",

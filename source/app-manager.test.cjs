@@ -3,247 +3,114 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createManager, makeAgent } = require('./app-manager.cjs');
+const { createManager, makeAgent, UiError } = require('./app-manager.cjs');
 const { defaultSchedule } = require('./weekly-schedule.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
-const calendar = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Reminder Test//EN\r\nEND:VCALENDAR\r\n';
 
 function fixture(t, options = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-app-test-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const root = path.join(home, 'Library/Application Support/OutlookAttendanceReminder');
-  const bundle = path.join(home, 'Applications/打刻 & リマインダー.app');
-  const calls = [], loaded = new Set(), fetches = [];
-  let failNextBootstrap = false;
+  const bundle = path.join(home, 'Applications/打刻リマインダー.app');
+  const calls = [], loaded = new Set(); let failNextBootstrap = false;
   const call = (command, args) => {
     calls.push({ command, args });
-    if (command === '/usr/bin/plutil') {
-      if (args[0] === '-lint') return { status: 0 };
-      return { status: 0, stdout: fs.readFileSync(args.at(-1), 'utf8') };
-    }
+    if (command === '/usr/bin/plutil') return args[0] === '-lint' ? { status: 0 } : { status: 0, stdout: fs.readFileSync(args.at(-1), 'utf8') };
     if (command !== '/bin/launchctl') return { status: 0 };
     const name = args[1]?.split('/').at(-1);
     if (args[0] === 'print') return { status: loaded.has(name) ? 0 : 1 };
     if (args[0] === 'bootout') loaded.delete(name);
-    if (args[0] === 'bootstrap') {
-      if (failNextBootstrap) { failNextBootstrap = false; return { status: 1 }; }
-      loaded.add(label);
-    }
+    if (args[0] === 'bootstrap') { if (failNextBootstrap) { failNextBootstrap = false; return { status: 1 }; } loaded.add(label); }
     return { status: 0 };
   };
-  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, fetch: async () => { fetches.push(true); return new Response(calendar); }, ...options });
-  const input = (value = 'https://example.invalid/calendar.ics') => { const file = path.join(home, 'private-input.txt'); fs.writeFileSync(file, value, { mode: 0o600 }); return file; };
-  return { home, root, bundle, manager, input, calls, loaded, fetches, failBootstrap: () => { failNextBootstrap = true; } };
+  const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, ...options });
+  const input = value => { const file = path.join(home, 'private-input.json'); fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 }); return file; };
+  return { home, root, bundle, manager, input, calls, loaded, failBootstrap: () => { failNextBootstrap = true; } };
 }
+const now = new Date('2026-10-13T00:30:00Z');
+const weekly = () => structuredClone(defaultSchedule());
 
-const overviewNow = new Date('2026-10-09T00:30:00Z');
-const attendanceCalendar = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Reminder Test//EN\r\nBEGIN:VEVENT\r\nUID:arrival\r\nDTSTART:20261009T004500Z\r\nDTEND:20261009T010000Z\r\nSUMMARY:出社\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:departure\r\nDTSTART:20261009T094500Z\r\nDTEND:20261009T100000Z\r\nSUMMARY:退勤\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
-
-test('overview stays unconfigured until a source is actually set', async t => {
-  const f = fixture(t, { now: () => overviewNow });
-  assert.deepEqual(await f.manager.overview(true), { configured: false, enabled: false, source: 'outlook', connection: 'unconfigured', fetchedAt: null, nextReminder: null, canMigrate: false });
-  assert.equal(f.fetches.length, 0);
-});
-
-test('overview verifies Outlook and returns the actual next reminder without exposing links or writing history', async t => {
-  const requests = [];
-  const f = fixture(t, { now: () => overviewNow, fetch: async () => { requests.push(true); return new Response(attendanceCalendar); } });
-  await f.manager.configure(f.input());
-  const view = await f.manager.overview(true);
-  assert.equal(requests.length, 2); assert.equal(view.connection, 'connected'); assert.equal(view.enabled, true);
-  assert.deepEqual(view.nextReminder, { kind: 'start', plannedAt: '2026-10-09T00:45:00.000Z', dueAt: '2026-10-09T00:40:00.000Z' });
-  assert.equal(view.fetchedAt, overviewNow.toISOString());
-  assert.equal(fs.existsSync(path.join(f.root, 'calendar-state.json')), false);
-  assert.ok(!JSON.stringify(view).includes('example.invalid')); assert.ok(!JSON.stringify(view).includes('subject'));
-  f.manager.stop(); assert.equal((await f.manager.overview(true)).nextReminder, null);
+test('a fresh install stays unconfigured and never requests a calendar connection', t => {
+  const f = fixture(t, { now: () => now });
+  assert.deepEqual(f.manager.overview(), { configured: false, enabled: false, source: 'weekly', nextReminder: null });
+  assert.equal(f.loaded.size, 0);
+  assert.equal(f.calls.some(call => call.command === '/usr/bin/curl'), false);
 });
 
-test('overview reuses fresh worker data, skips sent reminders, and a manual refresh checks the connection again', async t => {
-  const f = fixture(t, { now: () => overviewNow }); await f.manager.configure(f.input());
-  const state = { source: 'outlook', fetchedAt: overviewNow.getTime() - 60000, notified: { sent: 1 }, targets: [
-    { id: 'sent', kind: 'start', plannedAt: '2026-10-09T00:45:00Z', dueAt: '2026-10-09T00:40:00Z' },
-    { id: 'next', kind: 'end', plannedAt: '2026-10-09T09:45:00Z', dueAt: '2026-10-09T09:40:00Z' },
-  ] };
-  const stateFile = path.join(f.root, 'calendar-state.json'); fs.writeFileSync(stateFile, JSON.stringify(state));
-  const before = fs.readFileSync(stateFile);
-  const view = await f.manager.overview();
-  assert.equal(f.fetches.length, 1); assert.equal(view.nextReminder.kind, 'end');
-  assert.equal(view.nextReminder.dueAt, '2026-10-09T09:45:00.000Z');
-  const refreshed = await f.manager.overview(true);
-  assert.equal(f.fetches.length, 2); assert.equal(refreshed.connection, 'connected'); assert.equal(refreshed.nextReminder, null);
-  assert.deepEqual(fs.readFileSync(stateFile), before);
-});
-
-test('overview distinguishes a bounded fallback from an unavailable connection and never advertises expired data', async t => {
-  let unavailable = false;
-  const f = fixture(t, { now: () => overviewNow, fetch: async () => { if (unavailable) throw new Error('private URL must never be shown'); return new Response(calendar); } });
-  await f.manager.configure(f.input()); unavailable = true;
-  const stateFile = path.join(f.root, 'calendar-state.json');
-  const targets = [{ id: 'next', kind: 'end', plannedAt: '2026-10-09T09:45:00Z', dueAt: '2026-10-09T09:45:00Z' }];
-  for (const [minutes, connection] of [[14, 'cached'], [15, 'cached'], [16, 'failed']]) {
-    const state = { source: 'outlook', fetchedAt: overviewNow.getTime() - minutes * 60000, targets, notified: {} };
-    fs.writeFileSync(stateFile, JSON.stringify(state));
-    const view = await f.manager.overview();
-    assert.equal(view.connection, connection);
-    assert.equal(!!view.nextReminder, minutes <= 15); assert.equal(!!view.fetchedAt, minutes <= 15);
-    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)), state);
-    assert.ok(!JSON.stringify(view).includes('private URL'));
-  }
-  fs.rmSync(stateFile); const disconnected = await f.manager.overview();
-  assert.equal(disconnected.connection, 'failed'); assert.equal(disconnected.nextReminder, null);
-});
-
-test('weekly overview works offline, follows new weekday settings, and never falls back to weekly data in Outlook mode', async t => {
-  const f = fixture(t, { now: () => overviewNow }); await f.manager.configure(f.input());
-  const schedule = { ...defaultSchedule(), mode: 'weekly' }; schedule.weekdays[4].start = '10:00';
-  f.manager.configureSchedule(f.input(JSON.stringify(schedule)));
-  const weekly = await f.manager.overview();
-  assert.equal(weekly.connection, 'weekly'); assert.equal(f.fetches.length, 1);
-  assert.equal(weekly.nextReminder.dueAt, '2026-10-09T00:55:00.000Z');
-  fs.writeFileSync(path.join(f.root, 'calendar-state.json'), JSON.stringify({ source: 'weekly', fetchedAt: overviewNow.getTime(), targets: [{ id: 'weekly', kind: 'start', plannedAt: '2026-10-09T01:00:00Z', dueAt: '2026-10-09T00:55:00Z' }], notified: {} }));
-  f.manager.configureSchedule(f.input(JSON.stringify({ mode: 'outlook' })));
-  const switched = await f.manager.overview();
-  assert.equal(f.fetches.length, 2); assert.equal(switched.connection, 'connected'); assert.equal(switched.nextReminder, null);
-});
-
-test('overview observes notification history written while the calendar request was running', async t => {
-  let f, markSent = false;
-  f = fixture(t, { now: () => overviewNow, fetch: async () => {
-    if (markSent) {
-      const { targetsFromCalendar } = require('./calendar-core.cjs'), ical = require('node-ical');
-      const targets = targetsFromCalendar(ical.sync.parseICS(attendanceCalendar), ical, overviewNow);
-      fs.writeFileSync(path.join(f.root, 'calendar-state.json'), JSON.stringify({ targets, notified: { [targets[0].id]: overviewNow.getTime() }, fetchedAt: overviewNow.getTime(), source: 'outlook' }));
-    }
-    return new Response(attendanceCalendar);
-  } });
-  await f.manager.configure(f.input()); markSent = true;
-  assert.equal((await f.manager.overview(true)).nextReminder.kind, 'end');
-});
-
-test('weekly mode configures without an Outlook account or network request and survives stop/restart', t => {
-  const f = fixture(t); const weekly = { ...defaultSchedule(), mode: 'weekly' };
-  const file = f.input(JSON.stringify(weekly)); f.manager.configureSchedule(file);
-  assert.equal(fs.existsSync(file), false); assert.equal(fs.existsSync(path.join(f.root, 'config.json')), false);
-  assert.equal(f.fetches.length, 0); assert.equal(f.manager.enabled(), true);
-  assert.equal(fs.statSync(path.join(f.root, 'schedule.json')).mode & 0o777, 0o600);
-  assert.match(f.manager.status(), /週間予定/);
-  f.manager.stop(); f.manager.ensure(); assert.equal(f.manager.enabled(), false);
-  f.manager.start(); assert.equal(f.manager.enabled(), true); assert.deepEqual(f.manager.schedule(), weekly);
-});
-test('mode changes preserve the Outlook link, weekday times, and notification history', async t => {
-  const f = fixture(t); await f.manager.configure(f.input());
-  const calendarConfig = fs.readFileSync(path.join(f.root, 'config.json'));
-  const statePath = path.join(f.root, 'calendar-state.json'), state = { targets: [], notified: { previous: 123 }, fetchedAt: 0 };
-  fs.writeFileSync(statePath, JSON.stringify(state));
-  const weekly = { ...defaultSchedule(), mode: 'weekly' }; weekly.weekdays[3].end = '20:00';
-  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
-  f.manager.configureSchedule(f.input(JSON.stringify({ ...weekly, mode: 'outlook' })));
-  assert.deepEqual(fs.readFileSync(path.join(f.root, 'config.json')), calendarConfig);
-  assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), state);
-  assert.equal(f.manager.schedule().weekdays[3].end, '20:00'); assert.equal(f.fetches.length, 1);
-});
-test('Outlook saves without weekday inputs and keeps the previously saved weekly settings', async t => {
-  const f = fixture(t); await f.manager.configure(f.input());
-  const weekly = { ...defaultSchedule(), mode: 'weekly' };
-  weekly.weekdays[1].end = '20:00'; weekly.weekdays[2].enabled = false;
-  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
-  const config = fs.readFileSync(path.join(f.root, 'config.json'));
-  for (const value of [{ mode: 'outlook' }, { mode: 'outlook', weekdays: [{ enabled: 1, start: 'invalid' }] }]) {
-    const input = f.input(JSON.stringify(value));
-    assert.match(f.manager.configureSchedule(input), /Outlook/);
-    assert.equal(fs.existsSync(input), false);
-    assert.deepEqual(f.manager.schedule(), { ...weekly, mode: 'outlook' });
-    assert.deepEqual(fs.readFileSync(path.join(f.root, 'config.json')), config);
-    assert.equal(f.manager.enabled(), true);
-  }
-  assert.equal(f.fetches.length, 1);
-});
-test('invalid weekly settings and startup failures preserve the previous valid schedule', t => {
-  const f = fixture(t), weekly = { ...defaultSchedule(), mode: 'weekly' };
-  f.manager.configureSchedule(f.input(JSON.stringify(weekly)));
-  for (const value of ['not json', JSON.stringify({ ...weekly, weekdays: [] }), JSON.stringify({ ...weekly, mode: 'outlook' })]) {
-    const file = f.input(value); assert.throws(() => f.manager.configureSchedule(file));
-    assert.equal(fs.existsSync(file), false); assert.deepEqual(f.manager.schedule(), weekly);
-  }
-  const changed = structuredClone(weekly); changed.weekdays[0].start = '10:00';
-  f.failBootstrap(); assert.throws(() => f.manager.configureSchedule(f.input(JSON.stringify(changed))));
-  assert.deepEqual(f.manager.schedule(), weekly); assert.equal(f.manager.enabled(), true);
-});
-
-test('configures using a private input file and only the bundled runtime, without changing the app bundle', async t => {
-  const f = fixture(t); const file = f.input();
-  await f.manager.configure(file);
-  assert.equal(fs.existsSync(file), false);
-  assert.equal(fs.statSync(path.join(f.root, 'config.json')).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(f.root).mode & 0o777, 0o700);
-  assert.equal(fs.existsSync(f.bundle), false);
-  const agent = fs.readFileSync(path.join(f.home, 'Library/LaunchAgents', `${label}.plist`), 'utf8');
-  assert.ok(agent.includes('/Contents/Resources/runtime/arm64/node'));
-  assert.ok(agent.includes('打刻 &amp; リマインダー.app'));
-  assert.ok(!agent.includes('.nvm'));
-  assert.ok(!agent.includes('example.invalid'));
+test('a weekly schedule starts offline and survives stopping and restarting', t => {
+  const f = fixture(t, { now: () => now }), schedule = weekly();
+  schedule.weekdays[1].start = '10:15'; schedule.weekdays[1].end = '20:00';
+  assert.match(f.manager.configureSchedule(f.input(schedule)), /週間予定/);
   assert.equal(f.manager.enabled(), true);
-});
-
-test('invalid and inaccessible links retain the previous valid settings and remove temporary inputs', async t => {
-  const f = fixture(t); await f.manager.configure(f.input());
-  const before = fs.readFileSync(path.join(f.root, 'config.json'), 'utf8');
-  for (const value of ['http://example.invalid/calendar.ics', 'https://name:secret@example.invalid/calendar.ics', 'not-a-url']) {
-    const file = f.input(value); await assert.rejects(f.manager.configure(file)); assert.equal(fs.existsSync(file), false);
-    assert.equal(fs.readFileSync(path.join(f.root, 'config.json'), 'utf8'), before);
-  }
-  const failed = createManager({ home: f.home, root: f.root, bundle: f.bundle, arch: 'arm64', uid: 901,
-    call: () => ({ status: 0 }), fetch: async () => new Response('<html>sign in</html>') });
-  await assert.rejects(failed.configure(f.input('https://example.invalid/wrong-link')));
-  assert.equal(fs.readFileSync(path.join(f.root, 'config.json'), 'utf8'), before);
-});
-
-test('stop survives reopening, and restart preserves the calendar and notification history', async t => {
-  const f = fixture(t); await f.manager.configure(f.input());
-  const statePath = path.join(f.root, 'calendar-state.json'); const state = { notified: { 'test-event': 123 }, targets: [], fetchedAt: 456 };
-  fs.writeFileSync(statePath, JSON.stringify(state));
-  f.manager.stop(); assert.equal(f.manager.enabled(), false);
-  const notificationPattern = f.calls.find(c => c.command === '/usr/bin/pkill').args[1];
-  const notificationMatcher = new RegExp(notificationPattern);
-  assert.ok(notificationMatcher.test(`${f.bundle}/Contents/Resources/reminders/退勤リマインダー.app/Contents/MacOS/launcher`));
-  assert.equal(notificationMatcher.test('/Applications/another.app/Contents/MacOS/launcher'), false);
-  const before = f.calls.length; f.manager.ensure(); assert.equal(f.calls.length, before);
+  assert.equal(fs.existsSync(path.join(f.home, 'private-input.json')), false);
+  assert.equal(fs.statSync(path.join(f.root, 'schedule.json')).mode & 0o777, 0o600);
+  assert.equal(f.manager.overview().nextReminder.kind, 'start');
+  f.manager.stop(); f.manager.ensure();
+  assert.equal(f.manager.enabled(), false);
+  assert.deepEqual(f.manager.schedule().weekdays[1], { day: 2, enabled: true, start: '10:15', end: '20:00' });
   f.manager.start(); assert.equal(f.manager.enabled(), true);
-  assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), state);
 });
 
-test('migrates only this feature, preserves deduplication, and retires its old schedule after startup', t => {
-  const f = fixture(t); const oldRoot = path.join(f.home, 'Library/Application Support/AttendanceReminder');
-  fs.mkdirSync(oldRoot, { recursive: true }); fs.mkdirSync(path.join(f.home, '.outlook-calendar-sync'));
-  fs.writeFileSync(path.join(f.home, '.outlook-calendar-sync/config.json'), JSON.stringify({ icsUrl: 'https://example.invalid/calendar.ics' }));
-  fs.writeFileSync(path.join(oldRoot, 'calendar-reminder.cjs'), 'legacy fixture');
-  const state = { notified: { 'test-event': 123 }, targets: [], fetchedAt: 456 };
-  fs.writeFileSync(path.join(oldRoot, 'calendar-state.json'), JSON.stringify(state));
-  const agents = path.join(f.home, 'Library/LaunchAgents'); fs.mkdirSync(agents, { recursive: true });
-  const oldLabel = 'com.example.attendance-reminder.calendar'; f.loaded.add(oldLabel);
-  fs.writeFileSync(path.join(agents, `${oldLabel}.plist`), JSON.stringify({ Label: oldLabel, ProgramArguments: ['node', path.join(oldRoot, 'calendar-reminder.cjs')] }));
-  const unrelated = 'com.example.attendance-reminder.other'; f.loaded.add(unrelated);
-  fs.writeFileSync(path.join(agents, `${unrelated}.plist`), JSON.stringify({ Label: unrelated, ProgramArguments: ['node', path.join(f.home, 'unrelated.cjs')] }));
-  assert.equal(f.manager.canMigrate(), true); f.manager.migrate();
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.root, 'calendar-state.json'))), state);
-  assert.equal(f.loaded.has(oldLabel), false); assert.equal(f.loaded.has(unrelated), true);
-  const bootstrap = f.calls.findIndex(c => c.args[0] === 'bootstrap');
-  const disableOld = f.calls.findIndex(c => c.args[0] === 'disable' && c.args[1].endsWith(oldLabel));
-  assert.ok(bootstrap < disableOld);
-});
-
-test('a failed startup restores the previous schedule instead of leaving it unloaded', async t => {
-  const f = fixture(t); await f.manager.configure(f.input());
-  const agentPath = path.join(f.home, 'Library/LaunchAgents', `${label}.plist`);
-  const before = fs.readFileSync(agentPath, 'utf8'); f.failBootstrap();
-  assert.throws(() => f.manager.start());
-  assert.equal(fs.readFileSync(agentPath, 'utf8'), before); assert.equal(f.loaded.has(label), true);
-});
-
-test('Intel and Apple silicon schedules point at their respective bundled executables', () => {
-  const root = '/Users/example/Library/Application Support/OutlookAttendanceReminder';
-  for (const arch of ['x64', 'arm64']) {
-    const agent = makeAgent('/Applications/打刻リマインダー.app', root, arch, 901);
-    assert.ok(agent.includes(`/runtime/${arch}/node`)); assert.ok(agent.includes('ATTENDANCE_REMINDER_APP_PATH'));
+test('only five weekday rows are accepted and an invalid private input is consumed', t => {
+  const f = fixture(t);
+  for (const invalid of [{ mode: 'outlook', weekdays: weekly().weekdays }, { mode: 'weekly', weekdays: [] }]) {
+    const file = f.input(invalid); assert.throws(() => f.manager.configureSchedule(file), UiError); assert.equal(fs.existsSync(file), false);
   }
+  assert.equal(f.manager.configured(), false);
+});
+
+test('an older Outlook setup is converted to weekly times and its downloaded data is discarded', t => {
+  const f = fixture(t, { now: () => now }); fs.mkdirSync(f.root, { recursive: true });
+  const legacy = weekly(); legacy.mode = 'outlook'; legacy.weekdays[3].enabled = false; legacy.weekdays[4].end = '20:00'; legacy.icsUrl = 'private-link';
+  fs.writeFileSync(path.join(f.root, 'schedule.json'), JSON.stringify(legacy), { mode: 0o600 });
+  fs.writeFileSync(path.join(f.root, 'config.json'), JSON.stringify({ icsUrl: 'private-link' }), { mode: 0o600 });
+  fs.writeFileSync(path.join(f.root, 'calendar-state.json'), JSON.stringify({ targets: [{ id: 'old' }], notified: { sent: 1 } }), { mode: 0o600 });
+  fs.writeFileSync(path.join(f.root, 'calendar-start.txt'), 'private event', { mode: 0o600 });
+  f.manager.ensure();
+  assert.equal(f.manager.enabled(), true);
+  assert.deepEqual(f.manager.schedule().weekdays[3], { day: 4, enabled: false, start: '09:45', end: '18:45' });
+  assert.equal(f.manager.schedule().weekdays[4].end, '20:00');
+  assert.equal(fs.existsSync(path.join(f.root, 'config.json')), false);
+  assert.equal(fs.existsSync(path.join(f.root, 'calendar-start.txt')), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.root, 'calendar-state.json'))), { notified: { sent: 1 } });
+  assert.equal(JSON.stringify(f.manager.schedule()).includes('private-link'), false);
+});
+
+test('a stopped older setup is migrated without re-enabling notifications', t => {
+  const f = fixture(t); fs.mkdirSync(f.root, { recursive: true }); const legacy = weekly(); legacy.mode = 'outlook';
+  fs.writeFileSync(path.join(f.root, 'schedule.json'), JSON.stringify(legacy)); fs.writeFileSync(path.join(f.root, 'preferences.json'), JSON.stringify({ enabled: false }));
+  f.manager.ensure(); assert.equal(f.manager.configured(), true); assert.equal(f.manager.enabled(), false); assert.equal(f.loaded.size, 0);
+});
+
+test('unusable older calendar data requires a new weekday setup instead of inventing notifications', t => {
+  const f = fixture(t); fs.mkdirSync(f.root, { recursive: true }); const legacy = weekly(); legacy.mode = 'outlook'; legacy.weekdays.forEach(day => { day.enabled = false; });
+  fs.writeFileSync(path.join(f.root, 'schedule.json'), JSON.stringify(legacy)); f.manager.ensure();
+  assert.equal(f.manager.configured(), false); assert.equal(fs.existsSync(path.join(f.root, 'schedule.json')), false);
+});
+
+test('only a verified legacy helper is retired and unrelated settings remain intact', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-legacy-test-')); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const root = path.join(home, 'Library/Application Support/OutlookAttendanceReminder'), legacyRoot = path.join(home, 'Library/Application Support/AttendanceReminder'), agents = path.join(home, 'Library/LaunchAgents');
+  fs.mkdirSync(legacyRoot, { recursive: true }); fs.mkdirSync(agents, { recursive: true }); fs.writeFileSync(path.join(legacyRoot, 'calendar-reminder.cjs'), 'old');
+  const config = path.join(home, '.outlook-calendar-sync/config.json'); fs.mkdirSync(path.dirname(config), { recursive: true }); fs.writeFileSync(config, JSON.stringify({ icsUrl: 'private-link', otherSetting: true }));
+  fs.writeFileSync(path.join(agents, 'old-attendance-reminder.plist'), 'owned'); fs.writeFileSync(path.join(agents, 'unrelated-attendance-reminder.plist'), 'other');
+  const calls = [], manager = createManager({ home, root, bundle: '/Applications/打刻リマインダー.app', arch: 'arm64', uid: 901, call: (command, args) => {
+    calls.push({ command, args }); if (command === '/usr/bin/plutil') return { status: 0, stdout: JSON.stringify(args.at(-1).includes('old-') ? { Label: 'old-attendance-reminder', ProgramArguments: [path.join(legacyRoot, 'calendar-reminder.cjs')] } : { Label: 'unrelated', ProgramArguments: ['/tmp/other'] }) };
+    if (command === '/bin/launchctl') return { status: args[0] === 'print' ? 1 : 0 }; return { status: 0 };
+  } });
+  manager.cleanupOutlook();
+  assert.deepEqual(JSON.parse(fs.readFileSync(config)), { otherSetting: true });
+  assert.equal(calls.some(call => call.args?.includes('gui/901/old-attendance-reminder')), true);
+  assert.equal(calls.some(call => call.args?.includes('gui/901/unrelated')), false);
+});
+
+test('a failed automatic start restores the previous weekly schedule', t => {
+  const f = fixture(t), original = weekly(); original.weekdays[0].start = '08:30'; f.manager.configureSchedule(f.input(original)); f.failBootstrap();
+  const changed = weekly(); changed.weekdays[0].start = '10:00'; assert.throws(() => f.manager.configureSchedule(f.input(changed)), UiError);
+  assert.equal(f.manager.schedule().weekdays[0].start, '08:30');
+});
+
+test('the launch agent uses the bundled runtime for the current architecture', () => {
+  const agent = makeAgent('/Applications/打刻リマインダー.app', '/Users/example/Library/Application Support/OutlookAttendanceReminder', 'arm64', 501);
+  assert.match(agent, /Resources\/runtime\/arm64\/node/); assert.match(agent, /calendar-reminder\.cjs/); assert.doesNotMatch(agent, /node-ical|icsUrl/);
 });

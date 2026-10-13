@@ -37,11 +37,13 @@ function replaceApp(staged, target, rename = fs.renameSync) {
 function makeBundle(app, identifier, name, version, launcher) {
   fs.mkdirSync(path.join(app, 'Contents/MacOS'), { recursive: true });
   fs.mkdirSync(path.join(app, 'Contents/Resources'), { recursive: true });
+  fs.copyFileSync(path.join(project, 'native/AppIcon.icns'), path.join(app, 'Contents/Resources/AppIcon.icns'));
   fs.copyFileSync(launcher, path.join(app, 'Contents/MacOS/launcher'));
   fs.chmodSync(path.join(app, 'Contents/MacOS/launcher'), 0o755);
   fs.writeFileSync(path.join(app, 'Contents/Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>launcher</string>
+<key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundleIdentifier</key><string>${xml(identifier)}</string>
 <key>CFBundleName</key><string>${xml(name)}</string>
 <key>CFBundleDisplayName</key><string>${xml(name)}</string>
@@ -64,9 +66,8 @@ function buildApp(app, runtime, arch) {
   const resources = path.join(app, 'Contents/Resources');
   const scripts = path.join(resources, 'app');
   fs.mkdirSync(scripts);
-  for (const file of ['calendar-core.cjs', 'calendar-reminder.cjs', 'weekly-schedule.cjs', 'app-manager.cjs', 'configure.cjs', 'test-dialog.applescript', 'THIRD_PARTY_NOTICES.md']) fs.copyFileSync(path.join(project, 'source', file), path.join(scripts, file));
+  for (const file of ['calendar-core.cjs', 'calendar-reminder.cjs', 'weekly-schedule.cjs', 'app-manager.cjs', 'test-dialog.applescript', 'THIRD_PARTY_NOTICES.md']) fs.copyFileSync(path.join(project, 'source', file), path.join(scripts, file));
   fs.copyFileSync(path.join(project, 'package.json'), path.join(scripts, 'package.json'));
-  fs.cpSync(path.join(project, 'node_modules'), path.join(scripts, 'node_modules'), { recursive: true });
   fs.copyFileSync(path.join(project, 'source/launch-manager.sh'), path.join(resources, 'launch-manager.sh'));
   fs.chmodSync(path.join(resources, 'launch-manager.sh'), 0o755);
   fs.copyFileSync(path.join(project, 'README.md'), path.join(resources, 'README.md'));
@@ -104,7 +105,8 @@ function main() {
     assertOwnedApp(target);
     replaceApp(app, target);
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
-  console.log(`インストール完了：${target}\n「打刻リマインダー」を開き、Outlookまたは月〜金の週間予定を設定してください。`);
+  console.log(`インストール完了：${target}\n「打刻リマインダー」を開き、月〜金の出勤・退勤時刻を設定してください。`);
+  command(path.join(target, 'Contents/Resources/runtime', arch, 'node'), [path.join(target, 'Contents/Resources/app/app-manager.cjs'), 'ensure']);
   if (!args.includes('--no-open') && process.env.ATTENDANCE_NO_OPEN !== '1') command('/usr/bin/open', [target]);
 }
 module.exports = { assertOwnedApp, replaceApp, makeBundle };

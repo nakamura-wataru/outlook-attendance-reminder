@@ -2,10 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
-const ical = require('node-ical');
-const { saveConfig } = require('./configure.cjs');
-const { readSchedule, validateSchedule } = require('./weekly-schedule.cjs');
-const { refreshTargets, fetchTargets, maxCacheAge } = require('./calendar-reminder.cjs');
+const { readSchedule, validateSchedule, weeklyTargets } = require('./weekly-schedule.cjs');
 const { nextReminder } = require('./calendar-core.cjs');
 const label = 'com.outlook-attendance-reminder.calendar';
 class UiError extends Error {}
@@ -35,199 +32,138 @@ function createManager(options = {}) {
   const root = options.root || process.env.ATTENDANCE_REMINDER_ROOT || path.join(home, 'Library/Application Support/OutlookAttendanceReminder');
   const bundle = options.bundle || path.resolve(__dirname, '../../..');
   const arch = options.arch || process.arch;
-  const uid = options.uid ?? process.getuid();
-  const domain = `gui/${uid}`;
-  const agents = path.join(home, 'Library/LaunchAgents');
-  const agentPath = path.join(agents, `${label}.plist`);
-  const configPath = path.join(root, 'config.json');
-  const prefsPath = path.join(root, 'preferences.json');
-  const schedulePath = path.join(root, 'schedule.json');
+  const domain = `gui/${options.uid ?? process.getuid()}`;
+  const agents = path.join(home, 'Library/LaunchAgents'), agentPath = path.join(agents, `${label}.plist`);
+  const prefsPath = path.join(root, 'preferences.json'), schedulePath = path.join(root, 'schedule.json'), statePath = path.join(root, 'calendar-state.json');
   const legacyRoot = path.join(home, 'Library/Application Support/AttendanceReminder');
   const legacyConfig = path.join(home, '.outlook-calendar-sync/config.json');
   const call = options.call || ((command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 20000 }));
-  const json = (filename, fallback) => { try { return JSON.parse(fs.readFileSync(filename, 'utf8')); } catch { return fallback; } };
+  const json = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
   function ensureRoot() { fs.mkdirSync(root, { recursive: true, mode: 0o700 }); fs.chmodSync(root, 0o700); }
-  function atomic(filename, data) {
-    ensureRoot();
-    const temporary = `${filename}.tmp`;
-    fs.writeFileSync(temporary, data, { mode: 0o600 });
-    fs.renameSync(temporary, filename);
-    fs.chmodSync(filename, 0o600);
+  function atomic(file, data) {
+    ensureRoot(); fs.writeFileSync(`${file}.tmp`, JSON.stringify(data), { mode: 0o600 });
+    fs.renameSync(`${file}.tmp`, file); fs.chmodSync(file, 0o600);
   }
   const loaded = () => call('/bin/launchctl', ['print', `${domain}/${label}`]).status === 0;
-  const outlookConfigured = () => {
-    try { const value = new URL(json(configPath, {}).icsUrl); return value.protocol === 'https:' && !value.username && !value.password; }
-    catch { return false; }
-  };
-  const configured = () => {
-    try { return readSchedule(root).mode === 'weekly' || outlookConfigured(); }
-    catch { return false; }
-  };
+  const configured = () => { try { return fs.existsSync(schedulePath) && !!readSchedule(root); } catch { return false; } };
   const enabled = () => configured() && json(prefsPath, {}).enabled !== false && loaded();
   function requiredCall(command, args) {
     if (call(command, args).status !== 0) throw new UiError('通知の自動実行を設定できませんでした。Macにログインした状態で、もう一度お試しください。');
   }
   function retireLegacy() {
-    const currentURL = json(configPath, {}).icsUrl;
-    if (!currentURL || json(legacyConfig, {}).icsUrl !== currentURL) return;
     if (!fs.existsSync(agents)) return;
-    const legacyPrograms = ['calendar-reminder.cjs', '出勤リマインダー.app', '退勤リマインダー.app'].map(file => path.join(legacyRoot, file));
+    const programs = ['calendar-reminder.cjs', '出勤リマインダー.app', '退勤リマインダー.app'].map(file => path.join(legacyRoot, file));
     for (const entry of fs.readdirSync(agents)) {
       if (!entry.endsWith('.plist') || !entry.includes('attendance-reminder') || entry === `${label}.plist`) continue;
       const result = call('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(agents, entry)]);
       if (result.status !== 0) continue;
       let old; try { old = JSON.parse(result.stdout); } catch { continue; }
-      if (typeof old.Label !== 'string' || !Array.isArray(old.ProgramArguments) || !old.ProgramArguments.some(arg => legacyPrograms.includes(arg))) continue;
+      if (typeof old.Label !== 'string' || !Array.isArray(old.ProgramArguments) || !old.ProgramArguments.some(arg => programs.includes(arg))) continue;
       requiredCall('/bin/launchctl', ['disable', `${domain}/${old.Label}`]);
       if (call('/bin/launchctl', ['print', `${domain}/${old.Label}`]).status === 0) requiredCall('/bin/launchctl', ['bootout', `${domain}/${old.Label}`]);
     }
   }
-  function stopLegacyApplets() {
-    const currentURL = json(configPath, {}).icsUrl;
-    if (!currentURL || json(legacyConfig, {}).icsUrl !== currentURL) return;
-    // A migration preserves already snoozed alerts; explicit Stop cancels them.
+  function cleanupOutlook() {
+    const saved = json(schedulePath, null), state = json(statePath, {}) || {};
+    const legacyOwned = fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs'));
+    const oldConfig = (legacyOwned ? json(legacyConfig, {}) : {}) || {};
+    const files = ['config.json', 'config.json.tmp', 'calendar-state.json.tmp'];
+    const needsCleanup = files.some(file => fs.existsSync(path.join(root, file))) || saved?.mode === 'outlook' || Array.isArray(state.targets) || Object.hasOwn(oldConfig, 'icsUrl');
+    if (!needsCleanup) return;
+    // Stop the previous worker before removing its link and downloaded data.
+    if (loaded()) requiredCall('/bin/launchctl', ['bootout', `${domain}/${label}`]);
+    retireLegacy();
     call('/usr/bin/pkill', ['-f', `^${processDirectory(legacyRoot)}/[^/]+[.]app/Contents/MacOS/(applet|launcher)( |$)`]);
+    if (saved?.mode === 'outlook') {
+      let weekly;
+      try { weekly = validateSchedule({ ...saved, mode: 'weekly' }); }
+      catch { fs.rmSync(schedulePath, { force: true }); weekly = null; }
+      if (weekly) atomic(schedulePath, weekly);
+    }
+    if (fs.existsSync(statePath)) atomic(statePath, { notified: state.notified && typeof state.notified === 'object' && !Array.isArray(state.notified) ? state.notified : {} });
+    for (const name of [...files, 'calendar-start.txt', 'calendar-end.txt', 'calendar-start.txt.tmp', 'calendar-end.txt.tmp', 'calendar.log', 'calendar-error.log']) fs.rmSync(path.join(root, name), { force: true });
+    if (legacyOwned) {
+      delete oldConfig.icsUrl;
+      if (fs.existsSync(legacyConfig)) {
+        if (Object.keys(oldConfig).length) { fs.writeFileSync(legacyConfig, JSON.stringify(oldConfig), { mode: 0o600 }); fs.chmodSync(legacyConfig, 0o600); }
+        else fs.rmSync(legacyConfig);
+      }
+      fs.rmSync(`${legacyConfig}.tmp`, { force: true });
+      for (const name of ['config.json', 'config.json.tmp', 'calendar-state.json', 'calendar-state.json.tmp', 'calendar-start.txt', 'calendar-end.txt', 'calendar.log', 'calendar-error.log']) fs.rmSync(path.join(legacyRoot, name), { force: true });
+    }
   }
   function start() {
-    if (!configured()) throw new UiError('先にOutlookまたは月〜金の週間予定を設定してください。');
+    cleanupOutlook();
+    if (!configured()) throw new UiError('先に月〜金の出勤・退勤時刻を設定してください。');
     if (!['arm64', 'x64'].includes(arch)) throw new UiError('このMacの種類には対応していません。');
-    ensureRoot();
-    fs.mkdirSync(agents, { recursive: true, mode: 0o700 });
+    ensureRoot(); fs.mkdirSync(agents, { recursive: true, mode: 0o700 });
     for (const filename of ['calendar.log', 'calendar-error.log']) {
-      const file = path.join(root, filename);
-      fs.closeSync(fs.openSync(file, 'a', 0o600));
-      fs.chmodSync(file, 0o600);
+      const file = path.join(root, filename); fs.closeSync(fs.openSync(file, 'a', 0o600)); fs.chmodSync(file, 0o600);
     }
-    const previous = fs.existsSync(agentPath) ? fs.readFileSync(agentPath) : null;
-    const wasLoaded = loaded();
-    const temporary = `${agentPath}.tmp`;
-    fs.writeFileSync(temporary, makeAgent(bundle, root, arch, uid), { mode: 0o600 });
-    requiredCall('/usr/bin/plutil', ['-lint', temporary]);
+    const previous = fs.existsSync(agentPath) ? fs.readFileSync(agentPath) : null, wasLoaded = loaded();
+    fs.writeFileSync(`${agentPath}.tmp`, makeAgent(bundle, root, arch, options.uid ?? process.getuid()), { mode: 0o600 });
+    requiredCall('/usr/bin/plutil', ['-lint', `${agentPath}.tmp`]);
     if (wasLoaded) requiredCall('/bin/launchctl', ['bootout', `${domain}/${label}`]);
-    fs.renameSync(temporary, agentPath);
-    try {
-      requiredCall('/bin/launchctl', ['enable', `${domain}/${label}`]);
-      requiredCall('/bin/launchctl', ['bootstrap', domain, agentPath]);
-    } catch (error) {
-      if (previous) fs.writeFileSync(agentPath, previous, { mode: 0o600 });
-      else fs.rmSync(agentPath, { force: true });
+    fs.renameSync(`${agentPath}.tmp`, agentPath);
+    try { requiredCall('/bin/launchctl', ['enable', `${domain}/${label}`]); requiredCall('/bin/launchctl', ['bootstrap', domain, agentPath]); }
+    catch (error) {
+      if (previous) fs.writeFileSync(agentPath, previous, { mode: 0o600 }); else fs.rmSync(agentPath, { force: true });
       if (wasLoaded && previous) call('/bin/launchctl', ['bootstrap', domain, agentPath]);
       throw error;
     }
-    atomic(prefsPath, JSON.stringify({ enabled: true }));
-    retireLegacy();
+    atomic(prefsPath, { enabled: true }); retireLegacy();
     return '通知を開始しました。アプリを閉じても通知は続きます。';
   }
   function stop() {
     requiredCall('/bin/launchctl', ['disable', `${domain}/${label}`]);
     if (loaded()) requiredCall('/bin/launchctl', ['bootout', `${domain}/${label}`]);
-    const reminderApps = processDirectory(path.join(bundle, 'Contents/Resources/reminders'));
-    call('/usr/bin/pkill', ['-f', `^${reminderApps}/[^/]+[.]app/Contents/MacOS/(applet|launcher)( |$)`]);
-    atomic(prefsPath, JSON.stringify({ enabled: false }));
-    retireLegacy();
-    stopLegacyApplets();
+    const reminders = processDirectory(path.join(bundle, 'Contents/Resources/reminders'));
+    call('/usr/bin/pkill', ['-f', `^${reminders}/[^/]+[.]app/Contents/MacOS/(applet|launcher)( |$)`]);
+    atomic(prefsPath, { enabled: false }); retireLegacy();
     return '通知を停止しました。再開するまで通知しません。';
-  }
-  async function configure(inputFile) {
-    let raw;
-    try { raw = fs.readFileSync(inputFile, 'utf8').trim(); }
-    finally { if (inputFile) fs.rmSync(inputFile, { force: true }); }
-    let url;
-    try { url = new URL(raw); } catch { throw new UiError('Outlook予定表のICSリンクを確認してください。'); }
-    if (url.protocol !== 'https:' || url.username || url.password) throw new UiError('HTTPS形式のICSリンクを入力してください。');
-    try {
-      const response = await (options.fetch || fetch)(raw, { signal: AbortSignal.timeout(20000) });
-      if (!response.ok) throw new Error('FetchFailed');
-      const body = await response.text();
-      if (!/^BEGIN:VCALENDAR\s*$/m.test(body)) throw new Error('InvalidCalendar');
-      await ical.async.parseICS(body);
-    } catch { throw new UiError('予定表を取得できませんでした。ICSリンクとネットワーク接続を確認してください。'); }
-    const changed = json(configPath, {}).icsUrl !== raw;
-    saveConfig(raw, root);
-    if (changed) fs.rmSync(path.join(root, 'calendar-state.json'), { force: true });
-    const previousSchedule = readSchedule(root);
-    atomic(schedulePath, JSON.stringify({ ...previousSchedule, mode: 'outlook' }));
-    return start();
   }
   function configureSchedule(inputFile) {
     let value;
     try { value = JSON.parse(fs.readFileSync(inputFile, 'utf8')); }
     catch { throw new UiError('週間予定を読み取れませんでした。もう一度設定してください。'); }
     finally { if (inputFile) fs.rmSync(inputFile, { force: true }); }
-    let schedule;
-    try { schedule = validateSchedule(value?.mode === 'outlook' ? { ...readSchedule(root), mode: 'outlook' } : value); }
-    catch (error) { throw new UiError(error.message); }
-    if (schedule.mode === 'outlook' && !outlookConfigured()) throw new UiError('先に「OutlookのICSリンクを設定」から予定表を登録してください。');
+    let schedule; try { schedule = validateSchedule(value); } catch (error) { throw new UiError(error.message); }
+    cleanupOutlook();
     const previous = fs.existsSync(schedulePath) ? fs.readFileSync(schedulePath) : null;
-    atomic(schedulePath, JSON.stringify(schedule));
-    try { start(); }
-    catch (error) {
-      if (previous) atomic(schedulePath, previous);
-      else fs.rmSync(schedulePath, { force: true });
+    atomic(schedulePath, schedule);
+    try { start(); } catch (error) {
+      if (previous) atomic(schedulePath, JSON.parse(previous)); else fs.rmSync(schedulePath, { force: true });
       throw error;
     }
-    return schedule.mode === 'weekly' ? '月〜金の週間予定で通知を開始しました。出勤は5分前、退勤は予定時刻にお知らせします。' : 'Outlookの予定表で通知を開始しました。';
-  }
-  function migrate() {
-    if (!configured()) {
-      const oldURL = json(legacyConfig, {}).icsUrl;
-      if (!oldURL || !fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs'))) throw new UiError('引き継げる通知設定が見つかりません。予定表を設定してください。');
-      saveConfig(oldURL, root);
-      const oldState = path.join(legacyRoot, 'calendar-state.json');
-      if (fs.existsSync(oldState)) atomic(path.join(root, 'calendar-state.json'), fs.readFileSync(oldState));
-    }
-    return start();
+    return '月〜金の週間予定で通知を開始しました。出勤は5分前、退勤は予定時刻にお知らせします。';
   }
   function ensure() {
+    cleanupOutlook();
     if (!configured() || json(prefsPath, {}).enabled === false) return;
-    const wanted = makeAgent(bundle, root, arch, uid);
+    const wanted = makeAgent(bundle, root, arch, options.uid ?? process.getuid());
     if (!loaded() || !fs.existsSync(agentPath) || fs.readFileSync(agentPath, 'utf8') !== wanted) start();
   }
   function status() {
-    if (!configured()) return '予定表：未設定\nOutlookまたは月〜金の週間予定を設定してください。';
-    const source = readSchedule(root).mode === 'weekly' ? '通知元：週間予定（月〜金）' : '通知元：Outlookの予定表';
-    return enabled() ? `通知：有効\n${source}\n出勤は5分前、退勤は予定時刻にお知らせします。\nこの画面を閉じても通知は続きます。` : `通知：停止中\n${source}\n「通知を再開」から再開できます。`;
+    if (!configured()) return '週間予定：未設定\n月〜金の出勤・退勤時刻を設定してください。';
+    return enabled() ? '通知：有効\n通知元：週間予定（月〜金）\n出勤は5分前、退勤は予定時刻にお知らせします。' : '通知：停止中\n「通知を再開」から再開できます。';
   }
-  const canMigrate = () => !configured() && typeof json(legacyConfig, {}).icsUrl === 'string' && fs.existsSync(path.join(legacyRoot, 'calendar-reminder.cjs'));
-  async function overview(force = false) {
-    const now = options.now ? options.now() : new Date();
-    const schedule = readSchedule(root);
-    const view = { configured: configured(), enabled: enabled(), source: schedule.mode, connection: 'unconfigured', fetchedAt: null, nextReminder: null, canMigrate: canMigrate() };
-    if (!view.configured) return view;
-    const statePath = path.join(root, 'calendar-state.json');
-    const stored = json(statePath, {});
-    const state = Array.isArray(stored.targets) && stored.notified && Number.isFinite(stored.fetchedAt) ? stored : { targets: [], notified: {}, fetchedAt: 0 };
-    // This read-only preview shares the worker's timing and cache rules. It must
-    // never mark notifications as sent or overwrite a concurrent worker's state.
-    const result = await refreshTargets(state, schedule, now, date => fetchTargets(date, root, options.fetch || fetch), force);
-    const data = result.state;
-    const age = now.getTime() - data.fetchedAt;
-    const usable = data.fetchedAt > 0 && age >= 0 && age <= maxCacheAge;
-    view.connection = schedule.mode === 'weekly' ? 'weekly' : data.fetchFailed ? (usable ? 'cached' : 'failed') : 'connected';
-    if (schedule.mode === 'outlook' && usable) view.fetchedAt = new Date(data.fetchedAt).toISOString();
-    if (view.enabled && (schedule.mode === 'weekly' || usable)) {
-      const current = options.now ? options.now() : new Date();
-      const notified = json(statePath, state).notified || state.notified;
-      view.nextReminder = nextReminder(data.targets, notified, current);
-    }
-    return view;
+  function overview() {
+    const now = options.now ? options.now() : new Date(), ready = configured(), active = enabled();
+    const notified = json(statePath, {}).notified || {};
+    return { configured: ready, enabled: active, source: 'weekly', nextReminder: active ? nextReminder(weeklyTargets(readSchedule(root), now), notified, now) : null };
   }
-  return { root, bundle, configured, enabled, start, stop, configure, configureSchedule, schedule: () => readSchedule(root), migrate, ensure, status, canMigrate, overview };
+  return { root, bundle, configured, enabled, start, stop, configureSchedule, schedule: () => readSchedule(root), cleanupOutlook, ensure, status, overview };
 }
 module.exports = { createManager, makeAgent, UiError };
 if (require.main === module) {
-  (async () => {
-    const manager = createManager();
-    const command = process.argv[2];
+  try {
+    const manager = createManager(), command = process.argv[2];
     if (command === 'configured') console.log(manager.configured() ? 'yes' : 'no');
     else if (command === 'enabled') console.log(manager.enabled() ? 'yes' : 'no');
-    else if (command === 'can-migrate') console.log(manager.canMigrate() ? 'yes' : 'no');
-    else if (command === 'agent-preview') console.log(makeAgent(manager.bundle, manager.root, process.arch, process.getuid()));
-    else if (['status', 'start', 'stop', 'migrate', 'ensure'].includes(command)) { const result = manager[command](); if (result) console.log(result); }
-    else if (command === 'configure') console.log(await manager.configure(process.argv[3]));
+    else if (['status', 'start', 'stop', 'ensure'].includes(command)) { const result = manager[command](); if (result) console.log(result); }
     else if (command === 'schedule') console.log(JSON.stringify(manager.schedule()));
-    else if (command === 'overview' || command === 'overview-refresh') console.log(JSON.stringify(await manager.overview(command === 'overview-refresh')));
+    else if (command === 'overview' || command === 'overview-refresh') console.log(JSON.stringify(manager.overview()));
     else if (command === 'configure-schedule') console.log(manager.configureSchedule(process.argv[3]));
     else throw new UiError('この操作には対応していません。');
-  })().catch(error => { console.error(error instanceof UiError ? error.message : '設定を変更できませんでした。もう一度お試しください。'); process.exitCode = 1; });
+  } catch (error) { console.error(error instanceof UiError ? error.message : '設定を変更できませんでした。もう一度お試しください。'); process.exitCode = 1; }
 }

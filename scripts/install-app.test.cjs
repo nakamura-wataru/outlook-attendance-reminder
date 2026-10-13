@@ -3,7 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assertOwnedApp, replaceApp } = require('./install-app.cjs');
+const { assertOwnedApp, replaceApp, makeBundle } = require('./install-app.cjs');
 function fixture(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-install-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; }
 test('同名の別アプリを上書きしない', t => {
   const dir = fixture(t); const app = path.join(dir, '打刻リマインダー.app'); fs.mkdirSync(app);
@@ -23,4 +23,22 @@ test('リンクをインストール先として使わない', t => {
   const dir = fixture(t); const real = path.join(dir, 'other'); const app = path.join(dir, 'linked.app');
   fs.mkdirSync(real); fs.symlinkSync(real, app);
   assert.throws(() => assertOwnedApp(app), /リンク/);
+});
+test('メインと出勤・退勤のアプリにFinder用アイコンを同梱する', t => {
+  const dir = fixture(t), launcher = path.join(dir, 'launcher'); fs.writeFileSync(launcher, 'fixture');
+  for (const suffix of ['app', 'start', 'end']) {
+    const app = path.join(dir, `${suffix}.app`);
+    makeBundle(app, `com.outlook-attendance-reminder.${suffix}`, '打刻リマインダー', 'test', launcher);
+    const info = fs.readFileSync(path.join(app, 'Contents/Info.plist'), 'utf8');
+    const iconName = info.match(/<key>CFBundleIconFile<\/key><string>([^<]+)<\/string>/)?.[1];
+    assert.ok(iconName, 'Finder can resolve an icon from the bundle metadata');
+    const icon = fs.readFileSync(path.join(app, 'Contents/Resources', iconName));
+    assert.equal(icon.toString('ascii', 0, 4), 'icns'); assert.equal(icon.readUInt32BE(4), icon.length);
+    const representations = [];
+    for (let offset = 8; offset < icon.length;) {
+      const size = icon.readUInt32BE(offset + 4); assert.ok(size >= 8 && offset + size <= icon.length);
+      representations.push(icon.toString('ascii', offset, offset + 4)); offset += size;
+    }
+    for (const type of ['ic04', 'ic05', 'ic10', 'ic11', 'ic12']) assert.ok(representations.includes(type), `${type} supports small, Retina, and large icon displays`);
+  }
 });
