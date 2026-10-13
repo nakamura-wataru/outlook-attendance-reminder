@@ -44,7 +44,7 @@ bash install.command
 
 登録したICSリンクは、設定を開き直すと入力済みの状態で表示します。
 
-ICSリンクはOutlook Webの「設定 → 予定表 → 共有の予定表 → 予定表の公開」で取得します。予定名が見える公開範囲を選び、ICSリンクを使ってください。[Microsoftの手順](https://support.microsoft.com/en-us/outlook/share-your-calendar-in-outlook-on-the-web)
+ICSリンクはOutlook Webの「設定 → 予定表 → 共有予定表 → 予定表を公開する」で取得します。予定名が見える公開範囲を選び、ICSリンクを使ってください。[Microsoftの手順](https://support.microsoft.com/en-us/outlook/share-your-calendar-in-outlook-on-the-web)
 
 ICSリンクを持つ人は予定表を読めるため、他人に送らないでください。会社で予定表の公開が許可されていない場合は、週間予定を使ってください。
 
