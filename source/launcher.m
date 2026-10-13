@@ -154,7 +154,7 @@
             if ([view isKindOfClass:NSDictionary.class]) [self applyOverview:view];
             else {
                 self.statusBadge.stringValue = @"△ 予定を確認できませんでした";
-                self.statusLabel.stringValue = @"「予定を更新」からもう一度お試しください。";
+                self.statusLabel.stringValue = @"しばらくしてから、もう一度お試しください。";
                 self.nextReminderTitle.stringValue = @"次のお知らせを確認できませんでした";
                 self.nextReminderDate.hidden = YES; self.nextReminderDetail.hidden = YES; [self updateManagerLayout];
             }
@@ -166,7 +166,6 @@
 - (void)refreshOverviewTimer:(NSTimer *)timer {
     if (self.window.visible && !self.window.attachedSheet && !self.scheduleWindow.visible) [self refreshOverview:NO];
 }
-- (void)refreshCalendar:(id)sender { [self refreshStatus]; }
 - (NSButton *)button:(NSString *)title selector:(SEL)selector {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:selector];
     button.bezelStyle = NSBezelStyleRounded; button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -255,8 +254,7 @@
     NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
     self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"通知の停止・再開は、Macを再起動しても維持されます";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
-    NSButton *refresh = [self button:@"予定を更新" selector:@selector(refreshCalendar:)]; refresh.toolTip = @"保存した週間予定と、次のお知らせをもう一度確認します";
-    NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, refresh, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
+    NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
     NSImage *appIcon = [[NSImage alloc] initWithContentsOfFile:[[self resources] stringByAppendingPathComponent:@"AppIcon.icns"]];
     [NSApp setApplicationIconImage:appIcon ?: [self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
