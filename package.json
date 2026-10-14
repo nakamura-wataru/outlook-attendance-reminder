@@ -1,6 +1,6 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.6.2",
+  "version": "2.6.3",
   "private": true,
   "description": "月〜金の週間予定から打刻を促すMacアプリ",
   "engines": {
