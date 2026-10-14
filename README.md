@@ -24,7 +24,7 @@ bash install.command
 2. 月〜金の出勤・退勤時刻を入力します。通知しない曜日はチェックを外します。
 3. 「保存して開始」を押します。
 
-![通知の予定を設定する画面](docs/images/weekly-schedule.svg)
+<img width="554" height="469" alt="Image" src="https://github.com/user-attachments/assets/e169bc09-ffbe-4fac-9041-7fac67451086" />
 
 たとえば出勤を9:45、退勤を18:45にすると、9:40と18:45に通知します。日本時間で毎週繰り返します。祝日も、チェックした曜日なら通知します。
 
@@ -36,7 +36,7 @@ bash install.command
 
 通知が来たら「打刻画面を開く」を押し、表示されたMyレコーダーで出勤・退勤を打刻します。まだ仕事中なら、10分後・30分後・1時間後・2時間後から時間を選んで再通知できます。
 
-![打刻リマインダーの通知画面](docs/images/reminder.svg)
+<img width="547" height="311" alt="Image" src="https://github.com/user-attachments/assets/d992e037-ed2a-4d3d-b03a-7b0eeb35649a" />
 
 ログインや打刻ができない場合は「ブラウザで開く」を使ってください。接続先やログイン方法は「接続設定」から変更できます。
 
