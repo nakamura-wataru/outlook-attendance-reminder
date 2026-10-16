@@ -66,6 +66,9 @@
 @property NSButton *notificationRecorderButton;
 @property NSLayoutConstraint *notificationFillConstraint;
 @property BOOL notificationRecorderOpen;
+@property BOOL recorderShowsBothPunches;
+@property NSButton *showBothPunchesButton;
+- (NSString *)blockedPunchLabel;
 @end
 
 @implementation ReminderController
@@ -399,6 +402,142 @@
     if (![[self recorderPreferences] stringForKey:@"server"]) [self configureRecorder:sender];
     else [self showRecorder];
 }
+- (NSString *)blockedPunchLabel {
+    if (!self.notificationMode || self.recorderShowsBothPunches) return nil;
+    if ([self.kind isEqualToString:@"start"]) return @"退勤";
+    if ([self.kind isEqualToString:@"end"]) return @"出勤";
+    return nil;
+}
+- (NSString *)javaScriptStringLiteral:(NSString *)value {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[value ?: @""] options:0 error:nil];
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (json.length < 2) return @"\"\"";
+    return [json substringWithRange:NSMakeRange(1, json.length - 2)];
+}
+- (NSString *)punchLockScript {
+    return @"(function(){"
+    "if(window.__kotPunchLockInstalled)return;"
+    "window.__kotPunchLockInstalled=true;"
+    "function currentLock(){return window.__kotPunchLock==='出勤'||window.__kotPunchLock==='退勤'?window.__kotPunchLock:'';}"
+    "function normalized(value){return String(value||'').replace(/\\s+/g,'');}"
+    "function remember(el,label){if(label==='出勤'||label==='退勤')el.setAttribute('data-kot-punch-label',label);return label;}"
+    "function labelOf(el){"
+    "var stored=el.getAttribute('data-kot-punch-label');"
+    "if(stored==='出勤'||stored==='退勤')return stored;"
+    "var text=normalized(el.innerText||el.textContent||el.value||el.getAttribute('aria-label')||'');"
+    "if(text==='出勤'||text==='退勤')return remember(el,text);"
+    "if(!text||text.length>8)return '';"
+    "var hasIn=text.indexOf('出勤')!==-1,hasOut=text.indexOf('退勤')!==-1;"
+    "if(text.indexOf('出勤')===0&&!hasOut)return remember(el,'出勤');"
+    "if(text.indexOf('退勤')===0&&!hasIn)return remember(el,'退勤');"
+    "return '';"
+    "}"
+    "function hide(el){"
+    "el.hidden=true;"
+    "el.style.setProperty('display','none','important');"
+    "el.setAttribute('disabled','disabled');"
+    "el.setAttribute('inert','');"
+    "el.setAttribute('aria-hidden','true');"
+    "el.setAttribute('tabindex','-1');"
+    "el.setAttribute('data-kot-punch-hidden','1');"
+    "}"
+    "function show(el){"
+    "el.hidden=false;"
+    "el.style.removeProperty('display');"
+    "el.removeAttribute('disabled');"
+    "el.removeAttribute('inert');"
+    "el.removeAttribute('aria-hidden');"
+    "if(el.getAttribute('tabindex')==='-1')el.removeAttribute('tabindex');"
+    "el.removeAttribute('data-kot-punch-hidden');"
+    "}"
+    "function controls(root,out){"
+    "if(!root||!root.querySelectorAll)return;"
+    "var nodes=root.querySelectorAll('button, a, input, [role=\"button\"]');"
+    "for(var i=0;i<nodes.length;i++)out.push(nodes[i]);"
+    "var all=root.querySelectorAll('*');"
+    "for(var j=0;j<all.length;j++)if(all[j].shadowRoot)controls(all[j].shadowRoot,out);"
+    "}"
+    "function ensureStyle(){"
+    "if(document.getElementById('kot-punch-lock-style'))return;"
+    "var style=document.createElement('style');"
+    "style.id='kot-punch-lock-style';"
+    "style.textContent='[data-kot-punch-hidden=\"1\"]{display:none !important;}';"
+    "(document.head||document.documentElement).appendChild(style);"
+    "}"
+    "function applyDom(){"
+    "ensureStyle();"
+    "var lock=currentLock(),found=[];"
+    "controls(document,found);"
+    "for(var i=0;i<found.length;i++){"
+    "var el=found[i],label=labelOf(el);"
+    "if(lock&&label===lock)hide(el);"
+    "else if(el.getAttribute('data-kot-punch-hidden')==='1')show(el);"
+    "}"
+    "}"
+    "function broadcast(){"
+    "var lock=currentLock(),frames=document.querySelectorAll('iframe');"
+    "for(var i=0;i<frames.length;i++){"
+    "try{frames[i].contentWindow.postMessage({source:'kot-punch-lock',lock:lock},'*');}catch(e){}"
+    "}"
+    "}"
+    "window.__kotApplyPunchLock=function(notify){applyDom();if(notify!==false)broadcast();};"
+    "window.addEventListener('message',function(event){"
+    "var data=event.data;"
+    "if(!data||data.source!=='kot-punch-lock')return;"
+    "if(data.lock!=='出勤'&&data.lock!=='退勤'&&data.lock!=='')return;"
+    "if(window.__kotPunchLock===data.lock)return;"
+    "window.__kotPunchLock=data.lock;"
+    "window.__kotApplyPunchLock(true);"
+    "});"
+    "function blockEvent(event){"
+    "var node=event.target;"
+    "while(node&&node!==document){"
+    "if(node.getAttribute&&node.getAttribute('data-kot-punch-hidden')==='1'){event.preventDefault();event.stopPropagation();return;}"
+    "node=node.parentNode||(node.getRootNode&&node.getRootNode().host);"
+    "}"
+    "}"
+    "['click','pointerdown','pointerup','mousedown','mouseup','touchstart','keydown'].forEach(function(type){window.addEventListener(type,blockEvent,true);});"
+    "var scheduled=false;"
+    "var observer=new MutationObserver(function(){"
+    "if(scheduled)return;"
+    "scheduled=true;"
+    "requestAnimationFrame(function(){scheduled=false;applyDom();});"
+    "});"
+    "function start(){"
+    "window.__kotApplyPunchLock(true);"
+    "if(document.documentElement)observer.observe(document.documentElement,{childList:true,subtree:true,characterData:true});"
+    "}"
+    "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);"
+    "else start();"
+    "})();";
+}
+- (void)installPunchLockScript {
+    WKUserContentController *controller = self.recorderWebView.configuration.userContentController;
+    if (!controller) return;
+    [controller removeAllUserScripts];
+    if (!self.notificationMode) return;
+    NSString *source = [NSString stringWithFormat:@"window.__kotPunchLock=%@;\n%@", [self javaScriptStringLiteral:[self blockedPunchLabel] ?: @""], [self punchLockScript]];
+    WKUserScript *script = [[WKUserScript alloc] initWithSource:source injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO];
+    [controller addUserScript:script];
+}
+- (void)applyPunchLock {
+    if (!self.notificationMode) return;
+    NSString *blocked = [self blockedPunchLabel];
+    if (self.showBothPunchesButton) self.showBothPunchesButton.enabled = blocked != nil;
+    if (self.recorderStatus) {
+        if (blocked) self.recorderStatus.stringValue = [NSString stringWithFormat:@"%@ボタンは表示していません。「両方表示」で出せます。", blocked];
+        else if (self.recorderShowsBothPunches) self.recorderStatus.stringValue = @"出勤と退勤の両方を表示しています。";
+        else self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
+    }
+    if (!self.recorderWebView) return;
+    NSString *script = [NSString stringWithFormat:@"window.__kotPunchLock=%@; if (window.__kotApplyPunchLock) window.__kotApplyPunchLock(true);", [self javaScriptStringLiteral:blocked ?: @""]];
+    [self.recorderWebView evaluateJavaScript:script completionHandler:nil];
+}
+- (void)showBothPunches:(id)sender {
+    self.recorderShowsBothPunches = YES;
+    [self installPunchLockScript];
+    [self applyPunchLock];
+}
 - (NSStackView *)recorderPanel:(CGFloat)minimumHeight {
     NSStackView *panel = [self verticalStack:12];
     self.recorderStatus = [self label:@"Myレコーダーを開いています…" size:13 strong:NO muted:YES];
@@ -407,7 +546,14 @@
     NSButton *reload = [self button:@"再読み込み" selector:@selector(reloadRecorder:)]; reload.toolTip = @"公式の打刻画面を読み込み直します";
     NSButton *settings = [self button:@"接続設定" selector:@selector(configureRecorder:)]; settings.toolTip = @"KING OF TIMEのサーバーとログイン方式を選びます";
     NSButton *browser = [self button:@"ブラウザで開く" selector:@selector(openRecorderInBrowser:)]; browser.toolTip = @"公式Myレコーダーを既定のブラウザで開きます";
-    NSStackView *toolbar = [NSStackView stackViewWithViews:@[reload, settings, browser]];
+    NSMutableArray<NSButton *> *tools = [NSMutableArray arrayWithObjects:reload, settings, browser, nil];
+    if (self.notificationMode) {
+        self.showBothPunchesButton = [self button:@"両方表示" selector:@selector(showBothPunches:)];
+        self.showBothPunchesButton.toolTip = @"隠している出勤・退勤ボタンを表示します";
+        self.showBothPunchesButton.enabled = [self blockedPunchLabel] != nil;
+        [tools addObject:self.showBothPunchesButton];
+    }
+    NSStackView *toolbar = [NSStackView stackViewWithViews:tools];
     toolbar.spacing = 12; [panel addArrangedSubview:toolbar];
     // All windows live in the main app, so WebKit shares its persistent session.
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
@@ -424,7 +570,9 @@
     return panel;
 }
 - (void)loadRecorder {
-    self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
+    [self installPunchLockScript];
+    if (self.notificationMode) [self applyPunchLock];
+    else self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
     [self.recorderWebView loadRequest:[NSURLRequest requestWithURL:[self recorderURL]]];
 }
 - (void)showRecorder {
@@ -456,6 +604,7 @@
     if (!action.targetFrame && [action.request.URL.scheme.lowercaseString isEqualToString:@"https"]) [webView loadRequest:action.request];
     return nil;
 }
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { [self applyPunchLock]; }
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled) self.recorderStatus.stringValue = @"表示できませんでした。接続設定を確認するか、ブラウザで開いてください。";
 }
@@ -481,7 +630,7 @@
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。出勤の通知では退勤ボタンを隠し、退勤の通知では出勤ボタンを隠します。「両方表示」で両方出せます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";
@@ -522,7 +671,7 @@
 - (void)updateNotificationRecorderLayout {
     self.notificationRecorderPanel.hidden = !self.notificationRecorderOpen;
     self.notificationRecorderButton.title = self.notificationRecorderOpen ? @"打刻画面を閉じる" : @"打刻画面を開く";
-    self.notificationRecorderButton.toolTip = self.notificationRecorderOpen ? @"打刻画面を隠し、小さな通知に戻します" : @"KING OF TIMEを表示します。出勤・退勤は開いた画面で選びます";
+    self.notificationRecorderButton.toolTip = self.notificationRecorderOpen ? @"打刻画面を隠し、小さな通知に戻します" : @"KING OF TIMEを表示します。この通知では、もう一方の打刻ボタンを隠します";
     self.notificationFillConstraint.active = self.notificationRecorderOpen;
     if (!self.notificationLayout) return;
     [self.window.contentView layoutSubtreeIfNeeded];
@@ -537,7 +686,9 @@
 }
 - (void)hideNotificationRecorder {
     self.notificationRecorderOpen = NO;
+    self.recorderShowsBothPunches = NO;
     [self.recorderWebView stopLoading];
+    if (self.showBothPunchesButton) self.showBothPunchesButton.enabled = [self blockedPunchLabel] != nil;
     [self updateNotificationRecorderLayout];
 }
 - (void)toggleNotificationRecorder:(id)sender {
