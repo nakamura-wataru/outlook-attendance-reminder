@@ -27,11 +27,12 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
     NSString *initialLocks = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"[]";
     return [NSString stringWithFormat:@"(() => { if (!location.hostname.endsWith('.ta.kingoftime.jp')) return;"
         "const guard = window.__attendanceReminderGuard || (window.__attendanceReminderGuard = { locked: new Set(%@), approved: new WeakSet() });"
-        "const kindFor = (target) => { const control = target.closest('button,input[type=button],input[type=submit],[role=button],a'); if (!control) return null; const label = (control.innerText || control.value || control.getAttribute('aria-label') || '').replace(/\\s/g, ''); return label === '出勤' || label === '退勤' ? { control, kind: label } : null; };"
+        "const labelFor = (node) => (node.innerText || node.value || node.getAttribute('aria-label') || '').replace(/\\s/g, '');"
+        "const kindFor = (target) => { let node = target instanceof Element ? target : null, candidate = null, kind = null; while (node && node !== document.body) { const label = labelFor(node); if (label === '出勤' || label === '退勤') { candidate = node; kind = label; } node = node.parentElement; } return candidate ? { control: candidate, kind } : null; };"
         "const notify = (action, kind) => { try { window.webkit.messageHandlers.attendanceReminderGuard.postMessage({ action, kind }); } catch (_) {} };"
-        "const controls = () => document.querySelectorAll('button,input[type=button],input[type=submit],[role=button],a');"
-        "const apply = () => { controls().forEach((control) => { const item = kindFor(control); if (item && guard.locked.has(item.kind)) { control.style.pointerEvents = 'none'; control.style.opacity = '0.45'; control.setAttribute('aria-disabled', 'true'); } }); };"
-        "const render = () => { const current = document.getElementById('attendance-reminder-guard'); if (current) current.remove(); if (!guard.locked.size || !document.body) return; const kinds = [...guard.locked].join('・'); const notice = document.createElement('div'); notice.id = 'attendance-reminder-guard'; notice.style.cssText = 'position:fixed;z-index:2147483647;top:12px;left:12px;right:12px;padding:12px 14px;border-radius:10px;background:#1c2040;color:#fff;font:14px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;gap:12px'; notice.innerHTML = `<span>${kinds}をこの画面で選択済みです。公式画面の結果を確認してください。</span><button type=\"button\" style=\"margin-left:auto;border:0;border-radius:7px;padding:7px 10px;background:#fff;color:#1c2040;font:600 13px -apple-system,BlinkMacSystemFont,sans-serif\">選択を戻す</button>`; notice.querySelector('button').addEventListener('click', () => { guard.locked.clear(); controls().forEach((control) => { control.style.pointerEvents = ''; control.style.opacity = ''; control.removeAttribute('aria-disabled'); }); notify('unlock'); render(); }); document.body.appendChild(notice); };"
+        "const controls = () => [...document.querySelectorAll('*')].map(kindFor).filter((item, index, items) => item && items.findIndex((other) => other.control === item.control) === index);"
+        "const apply = () => { controls().forEach(({ control, kind }) => { if (guard.locked.has(kind)) { control.style.pointerEvents = 'none'; control.style.opacity = '0.45'; control.setAttribute('aria-disabled', 'true'); } }); };"
+        "const render = () => { const current = document.getElementById('attendance-reminder-guard'); if (current) current.remove(); if (!guard.locked.size || !document.body) return; const kinds = [...guard.locked].join('・'); const notice = document.createElement('div'); notice.id = 'attendance-reminder-guard'; notice.style.cssText = 'position:fixed;z-index:2147483647;top:12px;left:12px;right:12px;padding:12px 14px;border-radius:10px;background:#1c2040;color:#fff;font:14px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;gap:12px'; notice.innerHTML = `<span>${kinds}をこの画面で選択済みです。公式画面の結果を確認してください。</span><button type=\"button\" style=\"margin-left:auto;border:0;border-radius:7px;padding:7px 10px;background:#fff;color:#1c2040;font:600 13px -apple-system,BlinkMacSystemFont,sans-serif\">選択を戻す</button>`; notice.querySelector('button').addEventListener('click', () => { guard.locked.clear(); controls().forEach(({ control }) => { control.style.pointerEvents = ''; control.style.opacity = ''; control.removeAttribute('aria-disabled'); }); notify('unlock'); render(); }); document.body.appendChild(notice); };"
         "document.addEventListener('click', (event) => { const item = kindFor(event.target); if (!item) return; if (guard.approved.has(item.control)) { guard.approved.delete(item.control); return; } event.preventDefault(); event.stopImmediatePropagation(); if (guard.locked.has(item.kind)) return; if (!window.confirm(`${item.kind}を打刻しますか？`)) return; guard.locked.add(item.kind); notify('lock', item.kind); guard.approved.add(item.control); apply(); render(); item.control.click(); }, true);"
         "const observer = new MutationObserver(() => { apply(); });"
         "const start = () => { observer.observe(document.documentElement, { childList: true, subtree: true }); apply(); render(); };"
@@ -69,6 +70,7 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
 @property NSPopUpButton *snoozeChoice;
 @property NSWindow *recorderWindow;
 @property WKWebView *recorderWebView;
+@property WKUserContentController *recorderContentController;
 @property NSTextField *recorderStatus;
 @property NSWindow *scheduleWindow;
 @property NSButton *scheduleSaveButton;
@@ -401,10 +403,9 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
     return locked;
 }
 - (void)installRecorderGuard {
-    if (!self.recorderWebView) return;
-    WKUserContentController *content = self.recorderWebView.configuration.userContentController;
-    [content removeAllUserScripts];
-    [content addUserScript:[[WKUserScript alloc] initWithSource:RecorderGuardScript([self lockedRecorderKinds]) injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
+    if (!self.recorderContentController) return;
+    [self.recorderContentController removeAllUserScripts];
+    [self.recorderContentController addUserScript:[[WKUserScript alloc] initWithSource:RecorderGuardScript([self lockedRecorderKinds]) injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
 }
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
     if (![message.name isEqualToString:@"attendanceReminderGuard"] || ![message.body isKindOfClass:NSDictionary.class] || ![message.frameInfo.request.URL.host hasSuffix:@".ta.kingoftime.jp"]) return;
@@ -464,7 +465,10 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
     // All windows live in the main app, so WebKit shares its persistent session.
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore;
-    [configuration.userContentController addScriptMessageHandler:self name:@"attendanceReminderGuard"];
+    self.recorderContentController = [[WKUserContentController alloc] init];
+    configuration.userContentController = self.recorderContentController;
+    [self.recorderContentController addScriptMessageHandler:self name:@"attendanceReminderGuard"];
+    [self installRecorderGuard];
     self.recorderWebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.recorderWebView.navigationDelegate = self; self.recorderWebView.UIDelegate = self;
     self.recorderWebView.translatesAutoresizingMaskIntoConstraints = NO;
