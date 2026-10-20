@@ -22,29 +22,7 @@
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self setNeedsDisplay:YES]; }
 @end
 
-static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
-    NSData *data = [NSJSONSerialization dataWithJSONObject:lockedKinds options:0 error:nil];
-    NSString *initialLocks = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"[]";
-    return [NSString stringWithFormat:@"(() => { if (!location.hostname.endsWith('.ta.kingoftime.jp')) return;"
-        "const persistedLocks = new Set(%@); const existing = window.__attendanceReminderGuard; if (existing) { existing.locked.clear(); persistedLocks.forEach((kind) => existing.locked.add(kind)); existing.apply(); existing.render(); return; }"
-        "const guard = window.__attendanceReminderGuard = { locked: persistedLocks, approved: new WeakSet() };"
-        "const labelFor = (node) => (node.innerText || node.value || node.getAttribute('aria-label') || '').replace(/\\s/g, '');"
-        "const kindFor = (target) => { let node = target instanceof Element ? target : null, candidate = null, kind = null; while (node && node !== document.body) { const label = labelFor(node); if (label === '出勤' || label === '退勤') { candidate = node; kind = label; } node = node.parentElement; } return candidate ? { control: candidate, kind } : null; };"
-        "const notify = (action, kind) => { try { window.webkit.messageHandlers.attendanceReminderGuard.postMessage({ action, kind }); } catch (_) {} };"
-        "const controls = () => [...document.querySelectorAll('*')].map(kindFor).filter((item, index, items) => item && items.findIndex((other) => other.control === item.control) === index);"
-        "const apply = () => { controls().forEach(({ control, kind }) => { if (guard.locked.has(kind)) { control.style.pointerEvents = 'none'; control.style.opacity = '0.45'; control.setAttribute('aria-disabled', 'true'); } }); };"
-        "const render = () => { const current = document.getElementById('attendance-reminder-guard'); if (current) current.remove(); if (!guard.locked.size || !document.body) return; const kinds = [...guard.locked].join('・'); const notice = document.createElement('div'); notice.id = 'attendance-reminder-guard'; notice.style.cssText = 'position:fixed;z-index:2147483647;top:12px;left:12px;right:12px;padding:12px 14px;border-radius:10px;background:#1c2040;color:#fff;font:14px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;gap:12px'; notice.innerHTML = `<span>${kinds}をこの画面で選択済みです。公式画面の結果を確認してください。</span><button type=\"button\" style=\"margin-left:auto;border:0;border-radius:7px;padding:7px 10px;background:#fff;color:#1c2040;font:600 13px -apple-system,BlinkMacSystemFont,sans-serif\">選択を戻す</button>`; notice.querySelector('button').addEventListener('click', () => { guard.locked.clear(); controls().forEach(({ control }) => { control.style.pointerEvents = ''; control.style.opacity = ''; control.removeAttribute('aria-disabled'); }); notify('unlock'); render(); }); document.body.appendChild(notice); };"
-        "guard.apply = apply; guard.render = render;"
-        "const blockLocked = (event) => { const item = kindFor(event.target); if (!item || !guard.locked.has(item.kind)) return; event.preventDefault(); event.stopImmediatePropagation(); };"
-        "document.addEventListener('pointerdown', blockLocked, true); document.addEventListener('mousedown', blockLocked, true); document.addEventListener('touchstart', blockLocked, true);"
-        "document.addEventListener('click', (event) => { const item = kindFor(event.target); if (!item) return; if (guard.approved.has(item.control)) { guard.approved.delete(item.control); return; } event.preventDefault(); event.stopImmediatePropagation(); if (guard.locked.has(item.kind)) return; if (!window.confirm(`${item.kind}を打刻しますか？`)) return; guard.locked.add(item.kind); notify('lock', item.kind); guard.approved.add(item.control); apply(); render(); item.control.click(); }, true);"
-        "const observer = new MutationObserver(() => { apply(); });"
-        "const start = () => { observer.observe(document.documentElement, { childList: true, subtree: true }); apply(); render(); };"
-        "document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', start, { once: true }) : start();"
-    "})();", initialLocks];
-}
-
-@interface ReminderController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
+@interface ReminderController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
 @property NSWindow *window;
 @property NSTextField *statusLabel;
 @property NSTextField *statusBadge;
@@ -74,7 +52,6 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
 @property NSPopUpButton *snoozeChoice;
 @property NSWindow *recorderWindow;
 @property WKWebView *recorderWebView;
-@property WKUserContentController *recorderContentController;
 @property NSTextField *recorderStatus;
 @property NSWindow *scheduleWindow;
 @property NSButton *scheduleSaveButton;
@@ -390,40 +367,6 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
     }];
 }
 - (NSUserDefaults *)recorderPreferences { return [[NSUserDefaults alloc] initWithSuiteName:@"com.outlook-attendance-reminder.recorder"]; }
-- (NSString *)recorderGuardDate {
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
-    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Tokyo"];
-    formatter.dateFormat = @"yyyy-MM-dd";
-    return [formatter stringFromDate:NSDate.date];
-}
-- (NSString *)recorderGuardKey:(NSString *)kind { return [kind isEqualToString:@"出勤"] ? @"punchGuard.arrivalDate" : @"punchGuard.departureDate"; }
-- (NSArray<NSString *> *)lockedRecorderKinds {
-    NSUserDefaults *prefs = [self recorderPreferences];
-    NSString *today = [self recorderGuardDate];
-    NSMutableArray<NSString *> *locked = [NSMutableArray array];
-    for (NSString *kind in @[@"出勤", @"退勤"]) if ([[prefs stringForKey:[self recorderGuardKey:kind]] isEqualToString:today]) [locked addObject:kind];
-    return locked;
-}
-- (void)installRecorderGuard {
-    if (!self.recorderContentController) return;
-    [self.recorderContentController removeAllUserScripts];
-    [self.recorderContentController addUserScript:[[WKUserScript alloc] initWithSource:RecorderGuardScript([self lockedRecorderKinds]) injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
-}
-- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
-    NSString *originHost = message.frameInfo.securityOrigin.host.lowercaseString;
-    if (![message.name isEqualToString:@"attendanceReminderGuard"] || ![message.body isKindOfClass:NSDictionary.class] || ![originHost hasSuffix:@".ta.kingoftime.jp"]) return;
-    NSDictionary *body = message.body;
-    NSString *action = body[@"action"], *kind = body[@"kind"];
-    NSUserDefaults *prefs = [self recorderPreferences];
-    if ([action isEqualToString:@"lock"] && ([@"出勤" isEqualToString:kind] || [@"退勤" isEqualToString:kind])) [prefs setObject:[self recorderGuardDate] forKey:[self recorderGuardKey:kind]];
-    else if ([action isEqualToString:@"unlock"]) {
-        [prefs removeObjectForKey:[self recorderGuardKey:@"出勤"]];
-        [prefs removeObjectForKey:[self recorderGuardKey:@"退勤"]];
-    } else return;
-    [self installRecorderGuard];
-}
 - (NSURL *)recorderURL {
     NSUserDefaults *prefs = [self recorderPreferences];
     NSString *server = [prefs stringForKey:@"server"];
@@ -470,10 +413,6 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
     // All windows live in the main app, so WebKit shares its persistent session.
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore;
-    self.recorderContentController = [[WKUserContentController alloc] init];
-    configuration.userContentController = self.recorderContentController;
-    [self.recorderContentController addScriptMessageHandler:self name:@"attendanceReminderGuard"];
-    [self installRecorderGuard];
     self.recorderWebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.recorderWebView.navigationDelegate = self; self.recorderWebView.UIDelegate = self;
     self.recorderWebView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -487,7 +426,6 @@ static NSString *RecorderGuardScript(NSArray<NSString *> *lockedKinds) {
 }
 - (void)loadRecorder {
     self.recorderStatus.stringValue = @"公式画面でログインし、出勤・退勤ボタンを押してください。";
-    [self installRecorderGuard];
     [self.recorderWebView loadRequest:[NSURLRequest requestWithURL:[self recorderURL]]];
 }
 - (void)showRecorder {

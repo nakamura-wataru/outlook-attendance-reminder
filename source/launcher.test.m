@@ -146,9 +146,6 @@ int main(void) {
         [intent showRecorder]; Check(intent.loads == 0, @"A closed notification cannot load the recorder");
         intent.notificationRecorderOpen = YES; [intent showRecorder]; Check(intent.loads == 1, @"The recorder loads only after being opened");
         puts("PASS: notification recorder requires an explicit open action");
-        NSString *guardScript = RecorderGuardScript(@[@"出勤"]);
-        Check([guardScript containsString:@"を打刻しますか？"] && [guardScript containsString:@"new Set([\"出勤\"])"] && [guardScript containsString:@"attendanceReminderGuard"] && [guardScript containsString:@"選択を戻す"] && [guardScript containsString:@"pointerEvents = 'none'"] && [guardScript containsString:@"document.querySelectorAll('*')"] && [guardScript containsString:@"parentElement"] && [guardScript containsString:@"existing.apply()"] && [guardScript containsString:@"guard.apply = apply"] && [guardScript containsString:@"pointerdown"] && [guardScript containsString:@"mousedown"] && [guardScript containsString:@"touchstart"], @"Recorder guard confirms a punch and keeps the selected kind locked after reopening the page");
-        puts("PASS: recorder guard prevents accidental repeated punches across page reloads");
         RecorderSurfaceProbe *surface = [[RecorderSurfaceProbe alloc] init], *web = [[RecorderSurfaceProbe alloc] init];
         intent.notificationRecorderPanel = (NSStackView *)surface; intent.recorderWebView = (WKWebView *)web; intent.window = (NSWindow *)window;
         [intent snoozeNotification:nil];
