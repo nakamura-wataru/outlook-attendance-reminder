@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="title desc">
+  <title id="title">通知の予定を設定する画面</title>
+  <desc id="desc">月曜日から金曜日の出勤予定と退勤予定を入力する打刻リマインダーの画面</desc>
+  <rect width="960" height="600" fill="#0e1015"/>
+  <rect x="120" y="42" width="720" height="516" rx="16" fill="#161922" stroke="#343945"/>
+  <circle cx="148" cy="70" r="7" fill="#ff625a"/><circle cx="172" cy="70" r="7" fill="#ffbe2e"/><circle cx="196" cy="70" r="7" fill="#28c840"/>
+  <text x="224" y="76" fill="#e9ebf0" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="17" font-weight="700">通知の予定を設定</text>
+  <text x="160" y="124" fill="#e9ebf0" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="23" font-weight="700">いつお知らせしますか？</text>
+  <text x="160" y="154" fill="#99a0ae" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="14">チェックした曜日の出勤・退勤時刻に合わせてお知らせします。</text>
+  <rect x="160" y="184" width="640" height="266" rx="10" fill="#11141d" stroke="#262a34"/>
+  <text x="188" y="218" fill="#99a0ae" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="13">通知する曜日</text>
+  <text x="405" y="218" fill="#99a0ae" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="13">出勤予定</text>
+  <text x="592" y="218" fill="#99a0ae" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="13">退勤予定</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="15">
+    <g fill="#e9ebf0"><rect x="188" y="238" width="18" height="18" rx="5" fill="#4f46e5"/><path d="M193 247l4 4 6-8" fill="none" stroke="white" stroke-width="2"/><text x="218" y="253">月曜日</text><text x="218" y="296">火曜日</text><text x="218" y="339">水曜日</text><text x="218" y="382">木曜日</text><text x="218" y="425">金曜日</text></g>
+    <g fill="#4f46e5"><rect x="188" y="281" width="18" height="18" rx="5"/><rect x="188" y="324" width="18" height="18" rx="5"/><rect x="188" y="367" width="18" height="18" rx="5"/><rect x="188" y="410" width="18" height="18" rx="5"/></g>
+    <g stroke="white" stroke-width="2" fill="none"><path d="M193 290l4 4 6-8"/><path d="M193 333l4 4 6-8"/><path d="M193 376l4 4 6-8"/><path d="M193 419l4 4 6-8"/></g>
+    <g fill="#242834" stroke="#3a4050"><rect x="400" y="232" width="144" height="30" rx="6"/><rect x="400" y="275" width="144" height="30" rx="6"/><rect x="400" y="318" width="144" height="30" rx="6"/><rect x="400" y="361" width="144" height="30" rx="6"/><rect x="400" y="404" width="144" height="30" rx="6"/><rect x="586" y="232" width="144" height="30" rx="6"/><rect x="586" y="275" width="144" height="30" rx="6"/><rect x="586" y="318" width="144" height="30" rx="6"/><rect x="586" y="361" width="144" height="30" rx="6"/><rect x="586" y="404" width="144" height="30" rx="6"/></g>
+    <g fill="#e9ebf0"><text x="418" y="253">9:45</text><text x="418" y="296">9:45</text><text x="418" y="339">9:45</text><text x="418" y="382">9:45</text><text x="418" y="425">9:45</text><text x="604" y="253">18:45</text><text x="604" y="296">18:45</text><text x="604" y="339">18:45</text><text x="604" y="382">18:45</text><text x="604" y="425">18:45</text></g>
+  </g>
+  <rect x="160" y="482" width="142" height="42" rx="9" fill="#4f46e5"/>
+  <text x="185" y="509" fill="white" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="15" font-weight="700">保存して開始</text>
+</svg>

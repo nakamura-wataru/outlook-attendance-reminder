@@ -5,12 +5,13 @@
 #import "reminder-artwork.h"
 @interface ReminderCard : NSView
 @property BOOL canvas;
+@property BOOL accent;
 @end
 @implementation ReminderCard
 - (void)drawRect:(NSRect)dirtyRect {
-    [ReminderColor(self.canvas ? @"canvas" : @"surface") setFill];
+    [ReminderColor(self.canvas ? @"canvas" : (self.accent ? @"primary-soft" : @"surface")) setFill];
     NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, .5, .5) xRadius:8 yRadius:8]; [shape fill];
-    if (!self.canvas) { [ReminderColor(@"hairline") setStroke]; shape.lineWidth = 1; [shape stroke]; }
+    if (!self.canvas) { [ReminderColor(self.accent ? @"primary" : @"hairline") setStroke]; shape.lineWidth = 1; [shape stroke]; }
 }
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self setNeedsDisplay:YES]; }
 @end
@@ -739,8 +740,8 @@
     NSSize size = self.notificationRecorderOpen ? NSMakeSize(640, 800) : NSMakeSize(560, ceil(self.notificationLayout.fittingSize.height + 32));
     self.window.contentMinSize = self.notificationRecorderOpen ? NSMakeSize(580, 620) : NSMakeSize(560, size.height);
     NSRect frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, size.width, size.height)];
-    frame.origin = NSMakePoint(NSMinX(self.window.frame), NSMaxY(self.window.frame) - frame.size.height);
     NSRect visible = (self.window.screen ?: NSScreen.mainScreen).visibleFrame;
+    frame.origin = NSMakePoint(round(NSMidX(visible) - frame.size.width / 2), round(NSMidY(visible) - frame.size.height / 2));
     frame.origin.x = MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - frame.size.width));
     frame.origin.y = MAX(NSMinY(visible), MIN(frame.origin.y, NSMaxY(visible) - frame.size.height));
     [self.window setFrame:frame display:self.window.visible];
@@ -818,10 +819,15 @@
         self.snoozeChoice = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; self.snoozeChoice.translatesAutoresizingMaskIntoConstraints = NO;
         [self.snoozeChoice addItemsWithTitles:@[@"10分後", @"30分後", @"1時間後", @"2時間後"]];
         self.snoozeChoice.accessibilityLabel = @"再通知までの時間"; self.snoozeChoice.toolTip = @"まだ仕事中なら、次の通知までの時間を選べます";
-        [self.snoozeChoice.widthAnchor constraintEqualToConstant:120].active = YES;
+        self.snoozeChoice.controlSize = NSControlSizeLarge; self.snoozeChoice.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold]; self.snoozeChoice.contentTintColor = ReminderColor(@"primary");
+        [self.snoozeChoice.widthAnchor constraintEqualToConstant:152].active = YES;
+        NSStackView *snoozeControls = [self verticalStack:5];
+        [snoozeControls addArrangedSubview:[self label:@"再通知までの時間" size:12 strong:YES muted:NO]];
+        [snoozeControls addArrangedSubview:self.snoozeChoice];
+        ReminderCard *snoozeArea = (ReminderCard *)[self card:snoozeControls]; snoozeArea.accent = YES;
         NSButton *snooze = [self button:@"再通知" selector:@selector(snoozeNotification:)]; snooze.toolTip = @"選んだ時間が過ぎたら、もう一度通知します";
         NSButton *close = [self button:@"閉じる" selector:@selector(closeNotification:)]; close.toolTip = @"この通知と、その再通知を終了します";
-        NSStackView *footer = [NSStackView stackViewWithViews:@[[self label:@"あとでお知らせ" size:13 strong:NO muted:YES], self.snoozeChoice, snooze, close]];
+        NSStackView *footer = [NSStackView stackViewWithViews:@[snoozeArea, snooze, close]];
         footer.spacing = 12; footer.alignment = NSLayoutAttributeCenterY; [stack addArrangedSubview:footer];
     }
     self.reminderLabel.stringValue = [self reminderMessage];
