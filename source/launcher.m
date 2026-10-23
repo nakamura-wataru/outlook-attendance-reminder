@@ -332,9 +332,10 @@
         NSStackView *commonStartField = [self verticalStack:4]; [commonStartField addArrangedSubview:commonStartLabel]; [commonStartField addArrangedSubview:self.commonStartPicker];
         NSStackView *commonEndField = [self verticalStack:4]; [commonEndField addArrangedSubview:commonEndLabel]; [commonEndField addArrangedSubview:self.commonEndPicker];
         [self.applyCommonScheduleButton.widthAnchor constraintEqualToConstant:124].active = YES;
-        NSView *buttonSpacer = [NSView new]; [buttonSpacer.heightAnchor constraintEqualToAnchor:commonStartLabel.heightAnchor].active = YES;
+        NSView *buttonSpacer = [NSView new];
         NSStackView *applyField = [self verticalStack:4]; [applyField addArrangedSubview:buttonSpacer]; [applyField addArrangedSubview:self.applyCommonScheduleButton];
         NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartField, commonEndField, applyField]];
+        [buttonSpacer.heightAnchor constraintEqualToAnchor:commonStartLabel.heightAnchor].active = YES;
         commonFields.spacing = 16; commonFields.alignment = NSLayoutAttributeTop; [common addArrangedSubview:commonFields];
         NSView *commonCard = [self card:common]; [stack addArrangedSubview:commonCard]; [commonCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         NSStackView *weekly = [self verticalStack:12];

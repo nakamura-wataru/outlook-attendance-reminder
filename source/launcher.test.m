@@ -67,6 +67,13 @@
     completion(YES, @"saved");
 }
 @end
+@interface ScheduleWindowProbe : ReminderController
+@end
+@implementation ScheduleWindowProbe
+- (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
+    completion(YES, @"{\"weekdays\":[{\"enabled\":true,\"start\":\"09:45\",\"end\":\"18:45\"},{\"enabled\":true,\"start\":\"09:45\",\"end\":\"18:45\"},{\"enabled\":true,\"start\":\"09:45\",\"end\":\"18:45\"},{\"enabled\":true,\"start\":\"09:45\",\"end\":\"18:45\"},{\"enabled\":true,\"start\":\"09:45\",\"end\":\"18:45\"}]}");
+}
+@end
 @interface OverviewFieldProbe : NSObject
 @property NSString *stringValue;
 @property NSString *title;
@@ -147,6 +154,12 @@ int main(void) {
         [scheduleSave applyCommonSchedule:nil];
         for (NSUInteger index = 0; index < 5; index++) Check(scheduleSave.weekdayButtons[index].state == NSControlStateValueOn && [scheduleSave.startPickers[index].dateValue isEqual:commonStart.dateValue] && [scheduleSave.endPickers[index].dateValue isEqual:commonEnd.dateValue], @"Common times apply to every weekday and enable notifications");
         puts("PASS: weekly saves preserve boolean selections and valid times");
+        [NSApplication sharedApplication];
+        ScheduleWindowProbe *scheduleWindow = [[ScheduleWindowProbe alloc] init];
+        [scheduleWindow configureSchedule:nil];
+        Check(scheduleWindow.scheduleWindow.visible && scheduleWindow.commonStartPicker && scheduleWindow.commonEndPicker && scheduleWindow.applyCommonScheduleButton, @"Schedule button opens a configured settings window");
+        [scheduleWindow.scheduleWindow orderOut:nil];
+        puts("PASS: schedule settings open from the main action");
         WindowProbe *window = [[WindowProbe alloc] init];
         RecorderIntentProbe *intent = [[RecorderIntentProbe alloc] init]; intent.notificationMode = YES; intent.allowed = YES;
         [intent showRecorder]; Check(intent.loads == 0, @"A closed notification cannot load the recorder");
