@@ -140,6 +140,12 @@ int main(void) {
             Check([day[@"enabled"] boolValue] == (index != 2), @"Checked and unchecked weekday selections are preserved");
             Check([day[@"start"] isEqual:@"09:45"] && [day[@"end"] isEqual:@"18:45"], @"Weekly times use the validated HH:mm format");
         }
+        ScheduleControlProbe *commonStart = [[ScheduleControlProbe alloc] init], *commonEnd = [[ScheduleControlProbe alloc] init];
+        commonStart.dateValue = [[scheduleSave scheduleTimeFormatter:YES] dateFromString:@"2001-01-01 10:00"];
+        commonEnd.dateValue = [[scheduleSave scheduleTimeFormatter:YES] dateFromString:@"2001-01-01 19:00"];
+        scheduleSave.commonStartPicker = (NSDatePicker *)commonStart; scheduleSave.commonEndPicker = (NSDatePicker *)commonEnd;
+        [scheduleSave applyCommonSchedule:nil];
+        for (NSUInteger index = 0; index < 5; index++) Check(scheduleSave.weekdayButtons[index].state == NSControlStateValueOn && [scheduleSave.startPickers[index].dateValue isEqual:commonStart.dateValue] && [scheduleSave.endPickers[index].dateValue isEqual:commonEnd.dateValue], @"Common times apply to every weekday and enable notifications");
         puts("PASS: weekly saves preserve boolean selections and valid times");
         WindowProbe *window = [[WindowProbe alloc] init];
         RecorderIntentProbe *intent = [[RecorderIntentProbe alloc] init]; intent.notificationMode = YES; intent.allowed = YES;

@@ -58,6 +58,9 @@
 @property NSArray<NSButton *> *weekdayButtons;
 @property NSArray<NSDatePicker *> *startPickers;
 @property NSArray<NSDatePicker *> *endPickers;
+@property NSDatePicker *commonStartPicker;
+@property NSDatePicker *commonEndPicker;
+@property NSButton *applyCommonScheduleButton;
 @property BOOL scheduleBusy;
 @property NSStackView *scheduleLayout;
 @property NSView *weeklySettingsCard;
@@ -282,6 +285,8 @@
 - (void)updateScheduleControls:(id)sender {
     self.scheduleHint.stringValue = @"出勤は予定の5分前、退勤は予定時刻に通知します。\n日本時間で、チェックした曜日に毎週繰り返します。";
     self.scheduleSaveButton.enabled = !self.scheduleBusy;
+    self.commonStartPicker.enabled = !self.scheduleBusy; self.commonEndPicker.enabled = !self.scheduleBusy;
+    self.applyCommonScheduleButton.enabled = !self.scheduleBusy;
     for (NSUInteger index = 0; index < self.weekdayButtons.count; index++) {
         NSButton *day = self.weekdayButtons[index]; day.enabled = !self.scheduleBusy;
         BOOL enabled = day.enabled && day.state == NSControlStateValueOn;
@@ -289,6 +294,20 @@
     }
     [self.scheduleWindow.contentView layoutSubtreeIfNeeded];
     [self.scheduleWindow setContentSize:NSMakeSize(560, ceil(self.scheduleLayout.fittingSize.height + 48))];
+}
+- (void)applyCommonSchedule:(id)sender {
+    for (NSUInteger index = 0; index < self.weekdayButtons.count; index++) {
+        self.weekdayButtons[index].state = NSControlStateValueOn;
+        self.startPickers[index].dateValue = self.commonStartPicker.dateValue;
+        self.endPickers[index].dateValue = self.commonEndPicker.dateValue;
+    }
+    [self updateScheduleControls:nil];
+}
+- (void)syncCommonSchedulePickers {
+    NSUInteger index = [self.weekdayButtons indexOfObjectPassingTest:^BOOL(NSButton *day, NSUInteger index, BOOL *stop) { return day.state == NSControlStateValueOn; }];
+    if (index == NSNotFound) index = 0;
+    self.commonStartPicker.dateValue = self.startPickers[index].dateValue;
+    self.commonEndPicker.dateValue = self.endPickers[index].dateValue;
 }
 - (void)configureSchedule:(id)sender {
     if (!self.scheduleWindow) {
@@ -303,6 +322,16 @@
             [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.scheduleWindow.contentView.bottomAnchor constant:-24]
         ]];
         [stack addArrangedSubview:[self label:@"月〜金の出勤・退勤時刻" size:18 strong:YES muted:NO]];
+        NSStackView *common = [self verticalStack:8];
+        [common addArrangedSubview:[self label:@"共通の時刻" size:13 strong:YES muted:YES]];
+        self.commonStartPicker = [self schedulePicker:@"09:45"]; self.commonStartPicker.accessibilityLabel = @"共通の出勤予定時刻";
+        self.commonEndPicker = [self schedulePicker:@"18:45"]; self.commonEndPicker.accessibilityLabel = @"共通の退勤予定時刻";
+        self.applyCommonScheduleButton = [self button:@"月〜金に適用" selector:@selector(applyCommonSchedule:)]; self.applyCommonScheduleButton.toolTip = @"入力した時刻を月〜金に反映し、すべての曜日を通知対象にします";
+        NSTextField *commonStartLabel = [self label:@"出勤" size:13 strong:YES muted:NO];
+        NSTextField *commonEndLabel = [self label:@"退勤" size:13 strong:YES muted:NO];
+        NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartLabel, self.commonStartPicker, commonEndLabel, self.commonEndPicker, self.applyCommonScheduleButton]];
+        commonFields.spacing = 10; commonFields.alignment = NSLayoutAttributeCenterY; [common addArrangedSubview:commonFields];
+        NSView *commonCard = [self card:common]; [stack addArrangedSubview:commonCard]; [commonCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         NSStackView *weekly = [self verticalStack:12];
         NSTextField *dayHeader = [self label:@"通知する曜日" size:13 strong:YES muted:YES]; [dayHeader.widthAnchor constraintEqualToConstant:96].active = YES;
         NSTextField *startHeader = [self label:@"出勤予定" size:13 strong:YES muted:YES]; [startHeader.widthAnchor constraintEqualToConstant:128].active = YES;
@@ -336,6 +365,7 @@
                 self.startPickers[index].dateValue = [[self scheduleTimeFormatter:YES] dateFromString:[@"2001-01-01 " stringByAppendingString:row[@"start"]]];
                 self.endPickers[index].dateValue = [[self scheduleTimeFormatter:YES] dateFromString:[@"2001-01-01 " stringByAppendingString:row[@"end"]]];
             }
+            [self syncCommonSchedulePickers];
         } else [self showMessage:ok ? @"予定の設定を読み取れませんでした。" : text];
         [self updateScheduleControls:nil];
     }];
