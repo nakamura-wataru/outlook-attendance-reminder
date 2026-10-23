@@ -332,8 +332,10 @@
         NSStackView *commonStartField = [self verticalStack:4]; [commonStartField addArrangedSubview:commonStartLabel]; [commonStartField addArrangedSubview:self.commonStartPicker];
         NSStackView *commonEndField = [self verticalStack:4]; [commonEndField addArrangedSubview:commonEndLabel]; [commonEndField addArrangedSubview:self.commonEndPicker];
         [self.applyCommonScheduleButton.widthAnchor constraintEqualToConstant:124].active = YES;
-        NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartField, commonEndField, self.applyCommonScheduleButton]];
-        commonFields.spacing = 16; commonFields.alignment = NSLayoutAttributeBottom; [common addArrangedSubview:commonFields];
+        NSView *buttonSpacer = [NSView new]; [buttonSpacer.heightAnchor constraintEqualToAnchor:commonStartLabel.heightAnchor].active = YES;
+        NSStackView *applyField = [self verticalStack:4]; [applyField addArrangedSubview:buttonSpacer]; [applyField addArrangedSubview:self.applyCommonScheduleButton];
+        NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartField, commonEndField, applyField]];
+        commonFields.spacing = 16; commonFields.alignment = NSLayoutAttributeTop; [common addArrangedSubview:commonFields];
         NSView *commonCard = [self card:common]; [stack addArrangedSubview:commonCard]; [commonCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         NSStackView *weekly = [self verticalStack:12];
         NSTextField *dayHeader = [self label:@"通知する曜日" size:13 strong:YES muted:YES]; [dayHeader.widthAnchor constraintEqualToConstant:96].active = YES;
