@@ -327,10 +327,13 @@
         self.commonStartPicker = [self schedulePicker:@"09:45"]; self.commonStartPicker.accessibilityLabel = @"共通の出勤予定時刻";
         self.commonEndPicker = [self schedulePicker:@"18:45"]; self.commonEndPicker.accessibilityLabel = @"共通の退勤予定時刻";
         self.applyCommonScheduleButton = [self button:@"月〜金に適用" selector:@selector(applyCommonSchedule:)]; self.applyCommonScheduleButton.toolTip = @"入力した時刻を月〜金に反映し、すべての曜日を通知対象にします";
-        NSTextField *commonStartLabel = [self label:@"出勤" size:13 strong:YES muted:NO];
-        NSTextField *commonEndLabel = [self label:@"退勤" size:13 strong:YES muted:NO];
-        NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartLabel, self.commonStartPicker, commonEndLabel, self.commonEndPicker, self.applyCommonScheduleButton]];
-        commonFields.spacing = 10; commonFields.alignment = NSLayoutAttributeCenterY; [common addArrangedSubview:commonFields];
+        NSTextField *commonStartLabel = [self label:@"出勤予定" size:12 strong:YES muted:YES];
+        NSTextField *commonEndLabel = [self label:@"退勤予定" size:12 strong:YES muted:YES];
+        NSStackView *commonStartField = [self verticalStack:4]; [commonStartField addArrangedSubview:commonStartLabel]; [commonStartField addArrangedSubview:self.commonStartPicker];
+        NSStackView *commonEndField = [self verticalStack:4]; [commonEndField addArrangedSubview:commonEndLabel]; [commonEndField addArrangedSubview:self.commonEndPicker];
+        [self.applyCommonScheduleButton.widthAnchor constraintEqualToConstant:124].active = YES;
+        NSStackView *commonFields = [NSStackView stackViewWithViews:@[commonStartField, commonEndField, self.applyCommonScheduleButton]];
+        commonFields.spacing = 16; commonFields.alignment = NSLayoutAttributeBottom; [common addArrangedSubview:commonFields];
         NSView *commonCard = [self card:common]; [stack addArrangedSubview:commonCard]; [commonCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         NSStackView *weekly = [self verticalStack:12];
         NSTextField *dayHeader = [self label:@"通知する曜日" size:13 strong:YES muted:YES]; [dayHeader.widthAnchor constraintEqualToConstant:96].active = YES;
