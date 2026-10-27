@@ -118,8 +118,34 @@ static NSButton *ButtonForAction(NSView *view, SEL action) {
     for (NSView *child in view.subviews) { NSButton *button = ButtonForAction(child, action); if (button) return button; }
     return nil;
 }
+static NSView *ViewWithIdentifier(NSView *view, NSString *identifier) {
+    if ([view.identifier isEqual:identifier]) return view;
+    for (NSView *child in view.subviews) { NSView *match = ViewWithIdentifier(child, identifier); if (match) return match; }
+    return nil;
+}
 static void Check(BOOL passed, NSString *message) {
     if (!passed) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
+}
+static void CheckSummaryAlignment(ReminderController *manager) {
+    [manager.window.contentView layoutSubtreeIfNeeded];
+    CGFloat textStart = -1, iconStart = -1;
+    for (NSView *card in manager.managerLayout.arrangedSubviews) {
+        if (![card.identifier isEqual:@"summaryCard"]) continue;
+        NSView *icon = ViewWithIdentifier(card, @"summaryIcon");
+        NSStackView *text = (NSStackView *)ViewWithIdentifier(card, @"summaryText");
+        NSRect iconFrame = [icon convertRect:icon.bounds toView:manager.window.contentView];
+        NSRect textFrame = [text convertRect:text.bounds toView:manager.window.contentView];
+        NSRect cardFrame = [card convertRect:card.bounds toView:manager.window.contentView];
+        Check(NSEqualSizes(iconFrame.size, NSMakeSize(56, 56)), @"Every summary card renders a 56 point icon");
+        if (textStart < 0) { textStart = NSMinX(textFrame); iconStart = NSMinX(iconFrame); }
+        Check(fabs(NSMinX(textFrame) - textStart) < .5 && fabs(NSMinX(iconFrame) - iconStart) < .5, @"Summary icons and text share the same columns");
+        Check(fabs(NSMinX(textFrame) - NSMaxX(iconFrame) - 12) < .5, @"Summary text keeps the shared icon gap");
+        Check(NSContainsRect(cardFrame, iconFrame) && NSContainsRect(cardFrame, textFrame), @"Summary content stays within its card even when text wraps");
+        for (NSView *label in text.arrangedSubviews) if (!label.hidden) {
+            NSRect frame = [label.superview convertRect:[label alignmentRectForFrame:label.frame] toView:manager.window.contentView];
+            Check(fabs(NSMinX(frame) - textStart) < .5 && NSWidth(frame) <= NSWidth(textFrame) + .5, @"All lines use the same text column");
+        }
+    }
 }
 int main(void) {
     @autoreleasepool {
@@ -202,8 +228,20 @@ int main(void) {
         [scheduleWindow.scheduleWindow orderOut:nil];
         puts("PASS: schedule settings open from the main action");
         ManagerWindowProbe *manager = [[ManagerWindowProbe alloc] init]; [manager showManager];
-        NSButton *gear = ButtonForAction(manager.window.contentView, @selector(openSettings:));
+        Check([manager.window.title isEqual:@"ときとも"], @"The main window uses the new app name");
+        NSTitlebarAccessoryViewController *accessory = manager.window.titlebarAccessoryViewControllers.firstObject;
+        NSButton *gear = ButtonForAction(accessory.view, @selector(openSettings:));
+        Check(accessory.layoutAttribute == NSLayoutAttributeRight && ![gear isDescendantOf:manager.window.contentView], @"Settings lives at the trailing end of the native title bar");
         Check(gear && ButtonForAction(manager.window.contentView, @selector(help:)) && ButtonForAction(manager.window.contentView, @selector(openRecorder:)), @"Main keeps settings, help and the recorder accessible");
+        CheckSummaryAlignment(manager);
+        [manager applyOverview:@{@"configured": @YES, @"enabled": @YES, @"nextReminder": @{@"kind": @"end", @"dueAt": @"2026-10-27T09:45:00Z", @"plannedAt": @"2026-10-27T09:45:00Z"}}];
+        CheckSummaryAlignment(manager);
+        NSStackView *futureText = [manager verticalStack:4];
+        [futureText addArrangedSubview:[manager label:@"長いお知らせの文章が複数行に折り返されても、アイコンと文字の開始位置は変わりません。" size:15 strong:YES muted:NO]];
+        NSView *futureCard = [manager summaryCardWithIcon:[[ReminderClock alloc] init] content:futureText actions:nil];
+        [manager.managerLayout addArrangedSubview:futureCard]; [futureCard.widthAnchor constraintEqualToAnchor:manager.managerLayout.widthAnchor].active = YES;
+        [manager updateManagerLayout]; CheckSummaryAlignment(manager);
+        [manager.managerLayout removeArrangedSubview:futureCard]; [futureCard removeFromSuperview]; [manager updateManagerLayout];
         for (NSString *action in @[@"configureSchedule:", @"configurePomodoro:", @"testReminder:", @"toggle:"]) Check(!ButtonForAction(manager.window.contentView, NSSelectorFromString(action)), @"Secondary actions no longer appear on main");
         Check(manager.pomodoroStopButton.hidden, @"An idle Pomodoro does not display an end action");
         [gear performClick:nil]; NSWindow *settings = manager.settingsWindow;
@@ -222,6 +260,8 @@ int main(void) {
         [manager pauseOrResumePomodoro:nil]; [manager.window.contentView layoutSubtreeIfNeeded];
         NSRect actionAfter = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
         Check(NSEqualRects(actionBefore, actionAfter) && [manager.pomodoroPrimaryButton.title isEqual:@"再開"] && !manager.pomodoroStopButton.hidden, @"Pause and resume stay in place while end remains available");
+        CheckSummaryAlignment(manager);
+        manager.pomodoroResting = YES; [manager updatePomodoroUI]; CheckSummaryAlignment(manager);
         [manager stopPomodoro:nil]; Check(manager.pomodoroStopButton.hidden, @"Ending the timer hides end again");
         [manager.overviewTimer invalidate]; [manager.window orderOut:nil]; [manager.settingsWindow orderOut:nil];
         puts("PASS: compact main screen routes settings without losing timer controls");

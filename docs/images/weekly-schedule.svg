@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="title desc">
   <title id="title">通知の予定を設定する画面</title>
-  <desc id="desc">月曜日から金曜日の出勤予定と退勤予定を入力する打刻リマインダーの画面</desc>
+  <desc id="desc">月曜日から金曜日の出勤予定と退勤予定を入力する「ときとも」の画面</desc>
   <rect width="960" height="600" fill="#0e1015"/>
   <rect x="120" y="42" width="720" height="516" rx="16" fill="#161922" stroke="#343945"/>
   <circle cx="148" cy="70" r="7" fill="#ff625a"/><circle cx="172" cy="70" r="7" fill="#ffbe2e"/><circle cx="196" cy="70" r="7" fill="#28c840"/>

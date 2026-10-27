@@ -25,7 +25,7 @@ function fixture(t, options = {}) {
   };
   const manager = createManager({ home, root, bundle, arch: 'arm64', uid: 901, call, ...options });
   const input = value => { const file = path.join(home, 'private-input.json'); fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 }); return file; };
-  return { home, root, bundle, manager, input, calls, loaded, failBootstrap: () => { failNextBootstrap = true; } };
+  return { home, root, bundle, manager, input, call, calls, loaded, failBootstrap: () => { failNextBootstrap = true; } };
 }
 const now = new Date('2026-10-13T00:30:00Z');
 const weekly = () => structuredClone(defaultSchedule());
@@ -49,6 +49,23 @@ test('a weekly schedule starts offline and survives stopping and restarting', t 
   assert.equal(f.manager.enabled(), false);
   assert.deepEqual(f.manager.schedule().weekdays[1], { day: 2, enabled: true, start: '10:15', end: '20:00' });
   f.manager.start(); assert.equal(f.manager.enabled(), true);
+});
+
+for (const enabled of [true, false]) test(`renaming the app keeps the schedule, history, and notifications ${enabled ? 'enabled' : 'stopped'}`, t => {
+  const f = fixture(t), schedule = weekly(); schedule.weekdays[0].start = '08:30';
+  f.manager.configureSchedule(f.input(schedule));
+  if (!enabled) f.manager.stop();
+  const statePath = path.join(f.root, 'calendar-state.json'); fs.writeFileSync(statePath, JSON.stringify({ notified: { existing: 1 } }));
+  const saved = fs.readFileSync(path.join(f.root, 'schedule.json'), 'utf8'), history = fs.readFileSync(statePath, 'utf8');
+  const bundle = path.join(f.home, 'Applications/ときとも.app');
+  const manager = createManager({ home: f.home, root: f.root, bundle, arch: 'arm64', uid: 901, call: f.call });
+  manager.ensure();
+  assert.equal(manager.enabled(), enabled);
+  assert.equal(fs.readFileSync(path.join(f.root, 'schedule.json'), 'utf8'), saved);
+  assert.equal(fs.readFileSync(statePath, 'utf8'), history);
+  if (!enabled) manager.start();
+  const agent = fs.readFileSync(path.join(f.home, `Library/LaunchAgents/${label}.plist`), 'utf8');
+  assert.ok(agent.includes(bundle)); assert.ok(!agent.includes(f.bundle));
 });
 
 test('only five weekday rows are accepted and an invalid private input is consumed', t => {

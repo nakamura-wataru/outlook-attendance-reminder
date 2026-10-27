@@ -3,7 +3,9 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const appName = '打刻リマインダー.app';
+const displayName = 'ときとも';
+const appName = `${displayName}.app`;
+const legacyAppName = '打刻リマインダー.app';
 const bundleIdentifier = 'com.outlook-attendance-reminder.app';
 const project = path.resolve(__dirname, '..');
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -15,8 +17,12 @@ function command(file, args) {
 }
 function writable(directory) { try { fs.accessSync(directory, fs.constants.W_OK); return true; } catch { return false; } }
 function installationDirectory(home = os.homedir()) {
-  const existing = path.join('/Applications', appName);
-  if (fs.existsSync(existing) && !writable('/Applications')) throw new Error('既存のアプリを更新する権限がありません。管理者にインストールを依頼してください。');
+  const hasApp = directory => [appName, legacyAppName].some(name => fs.existsSync(path.join(directory, name)));
+  if (hasApp('/Applications')) {
+    if (!writable('/Applications')) throw new Error('既存のアプリを更新する権限がありません。管理者にインストールを依頼してください。');
+    return '/Applications';
+  }
+  if (hasApp(path.join(home, 'Applications'))) return path.join(home, 'Applications');
   return writable('/Applications') ? '/Applications' : path.join(home, 'Applications');
 }
 function assertOwnedApp(app, identify = filename => command('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', filename])) {
@@ -26,13 +32,20 @@ function assertOwnedApp(app, identify = filename => command('/usr/bin/plutil', [
   try { identifier = identify(path.join(app, 'Contents/Info.plist')); } catch { /* Refuse unknown contents. */ }
   if (identifier !== bundleIdentifier) throw new Error('同名の別アプリがあります。既存のアプリは変更していません。');
 }
-function replaceApp(staged, target, rename = fs.renameSync) {
-  const backup = `${target}.backup-${crypto.randomUUID()}`;
-  const exists = fs.existsSync(target);
-  if (exists) rename(target, backup);
-  try { rename(staged, target); }
-  catch (error) { if (exists) rename(backup, target); throw error; }
-  if (exists) fs.rmSync(backup, { recursive: true, force: true });
+function replaceApp(staged, target, rename = fs.renameSync, legacy = []) {
+  const moved = [];
+  try {
+    for (const app of new Set([target, ...legacy])) {
+      if (!fs.existsSync(app)) continue;
+      const backup = `${app}.backup-${crypto.randomUUID()}`;
+      rename(app, backup); moved.push({ app, backup });
+    }
+    rename(staged, target);
+  } catch (error) {
+    for (const { app, backup } of moved.reverse()) rename(backup, app);
+    throw error;
+  }
+  for (const { backup } of moved) fs.rmSync(backup, { recursive: true, force: true });
 }
 function makeBundle(app, identifier, name, version, launcher) {
   fs.mkdirSync(path.join(app, 'Contents/MacOS'), { recursive: true });
@@ -62,7 +75,7 @@ function buildApp(app, runtime, arch) {
   const expected = fs.readFileSync(path.join(project, 'native/launcher.sha256'), 'utf8').trim().split(/\s/)[0];
   if (crypto.createHash('sha256').update(fs.readFileSync(launcher)).digest('hex') !== expected) throw new Error('同梱アプリの検証に失敗しました。Gitから取得し直してください。');
   const { version } = JSON.parse(fs.readFileSync(path.join(project, 'package.json')));
-  makeBundle(app, bundleIdentifier, '打刻リマインダー', version, launcher);
+  makeBundle(app, bundleIdentifier, displayName, version, launcher);
   const resources = path.join(app, 'Contents/Resources');
   const scripts = path.join(resources, 'app');
   fs.mkdirSync(scripts);
@@ -96,16 +109,17 @@ function main() {
   const directory = path.resolve(process.env.ATTENDANCE_APPLICATIONS_DIR || installationDirectory());
   fs.mkdirSync(directory, { recursive: true });
   const target = path.join(directory, appName);
-  assertOwnedApp(target);
+  const legacy = path.join(directory, legacyAppName);
+  assertOwnedApp(target); assertOwnedApp(legacy);
   const stage = fs.mkdtempSync(path.join(directory, '.attendance-install-'));
   try {
     const app = path.join(stage, appName);
     console.log('Macアプリを作成しています…');
     buildApp(app, runtime, arch);
-    assertOwnedApp(target);
-    replaceApp(app, target);
+    assertOwnedApp(target); assertOwnedApp(legacy);
+    replaceApp(app, target, fs.renameSync, [legacy]);
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
-  console.log(`インストール完了：${target}\n「打刻リマインダー」を開き、月〜金の出勤・退勤時刻を設定してください。`);
+  console.log(`インストール完了：${target}\n「${displayName}」を開いて使えます。`);
   command(path.join(target, 'Contents/Resources/runtime', arch, 'node'), [path.join(target, 'Contents/Resources/app/app-manager.cjs'), 'ensure']);
   if (!args.includes('--no-open') && process.env.ATTENDANCE_NO_OPEN !== '1') command('/usr/bin/open', [target]);
 }

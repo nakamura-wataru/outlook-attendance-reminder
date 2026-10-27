@@ -19,6 +19,23 @@ test('置き換えに失敗した場合は以前のアプリを戻す', t => {
   assert.equal(fs.readFileSync(path.join(target, 'version'), 'utf8'), 'old');
   assert.equal(fs.readdirSync(dir).some(name => name.includes('backup-')), false);
 });
+test('旧名のアプリを残さず、ときともへ置き換える', t => {
+  const dir = fixture(t), legacy = path.join(dir, '打刻リマインダー.app'), target = path.join(dir, 'ときとも.app'), stage = path.join(dir, 'staged.app');
+  fs.mkdirSync(legacy); fs.writeFileSync(path.join(legacy, 'version'), 'old');
+  fs.mkdirSync(stage); fs.writeFileSync(path.join(stage, 'version'), 'new');
+  replaceApp(stage, target, fs.renameSync, [legacy]);
+  assert.equal(fs.readFileSync(path.join(target, 'version'), 'utf8'), 'new');
+  assert.deepEqual(fs.readdirSync(dir), ['ときとも.app']);
+});
+test('名前変更に失敗した場合は旧名と更新先のアプリを両方戻す', t => {
+  const dir = fixture(t), legacy = path.join(dir, '打刻リマインダー.app'), target = path.join(dir, 'ときとも.app'), stage = path.join(dir, 'staged.app');
+  for (const [app, version] of [[legacy, 'legacy'], [target, 'current'], [stage, 'new']]) { fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'version'), version); }
+  const rename = (from, to) => { if (from === stage) throw new Error('Disk failure'); fs.renameSync(from, to); };
+  assert.throws(() => replaceApp(stage, target, rename, [legacy]), /Disk failure/);
+  assert.equal(fs.readFileSync(path.join(legacy, 'version'), 'utf8'), 'legacy');
+  assert.equal(fs.readFileSync(path.join(target, 'version'), 'utf8'), 'current');
+  assert.equal(fs.readdirSync(dir).some(name => name.includes('backup-')), false);
+});
 test('リンクをインストール先として使わない', t => {
   const dir = fixture(t); const real = path.join(dir, 'other'); const app = path.join(dir, 'linked.app');
   fs.mkdirSync(real); fs.symlinkSync(real, app);

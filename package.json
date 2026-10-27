@@ -1,8 +1,8 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.9.1",
+  "version": "2.10.0",
   "private": true,
-  "description": "月〜金の週間予定から打刻を促すMacアプリ",
+  "description": "ときとも — 仕事の時間に、ちょうどいいひと区切り。打刻のお知らせとポモドーロのMacアプリ",
   "engines": {
     "node": ">=22"
   },

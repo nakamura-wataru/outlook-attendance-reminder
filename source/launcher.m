@@ -164,7 +164,7 @@
     });
 }
 - (void)showMessage:(NSString *)message {
-    NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"打刻リマインダー";
+    NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"ときとも";
     alert.icon = [self clockImage];
     alert.informativeText = message; [alert addButtonWithTitle:@"閉じる"];
     NSWindow *parent = self.scheduleWindow.visible ? self.scheduleWindow : (self.settingsWindow.visible ? self.settingsWindow : self.window);
@@ -263,6 +263,48 @@
         [content.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16]
     ]];
     return card;
+}
+- (NSView *)summaryCardWithIcon:(NSView *)icon content:(NSStackView *)content actions:(NSView *)actions {
+    // All summary cards share the same icon column and text inset, including future cards.
+    CGFloat iconSize = 56, gap = 12;
+    NSView *row = [[NSView alloc] init];
+    icon.identifier = @"summaryIcon"; content.identifier = @"summaryText";
+    for (NSView *view in @[icon, content]) { view.translatesAutoresizingMaskIntoConstraints = NO; [row addSubview:view]; }
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.widthAnchor constraintEqualToConstant:iconSize], [icon.heightAnchor constraintEqualToConstant:iconSize],
+        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor], [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [content.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:gap],
+        [content.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [content.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor],
+        [row.heightAnchor constraintGreaterThanOrEqualToAnchor:icon.heightAnchor]
+    ]];
+    NSLayoutConstraint *textHeight = [row.heightAnchor constraintEqualToAnchor:content.heightAnchor]; textHeight.priority = NSLayoutPriorityDefaultHigh; textHeight.active = YES;
+    if (actions) {
+        actions.translatesAutoresizingMaskIntoConstraints = NO; [row addSubview:actions];
+        [NSLayoutConstraint activateConstraints:@[
+            [actions.leadingAnchor constraintEqualToAnchor:content.trailingAnchor constant:gap],
+            [actions.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+            [actions.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [row.heightAnchor constraintGreaterThanOrEqualToAnchor:actions.heightAnchor]
+        ]];
+    } else [content.trailingAnchor constraintEqualToAnchor:row.trailingAnchor].active = YES;
+    for (NSView *label in content.arrangedSubviews) [label.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+    NSView *card = [self card:row]; card.identifier = @"summaryCard"; return card;
+}
+- (void)addSettingsToTitlebar {
+    NSImage *image = [NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:@"設定"];
+    image = [image imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:16 weight:NSFontWeightRegular]];
+    NSButton *settings = [NSButton buttonWithImage:image target:self action:@selector(openSettings:)];
+    settings.translatesAutoresizingMaskIntoConstraints = NO; settings.bezelStyle = NSBezelStyleTexturedRounded; settings.showsBorderOnlyWhileMouseInside = YES;
+    settings.toolTip = @"設定"; settings.accessibilityLabel = @"設定"; [self.buttons addObject:settings];
+    NSTitlebarAccessoryViewController *accessory = [[NSTitlebarAccessoryViewController alloc] init]; accessory.layoutAttribute = NSLayoutAttributeRight;
+    accessory.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 44, 28)]; [accessory.view addSubview:settings];
+    [NSLayoutConstraint activateConstraints:@[
+        [settings.widthAnchor constraintEqualToConstant:32], [settings.heightAnchor constraintEqualToConstant:28],
+        [settings.centerYAnchor constraintEqualToAnchor:accessory.view.centerYAnchor],
+        [settings.trailingAnchor constraintEqualToAnchor:accessory.view.trailingAnchor constant:-8]
+    ]];
+    [self.window addTitlebarAccessoryViewController:accessory];
 }
 - (NSUserDefaults *)pomodoroPreferences { return [[NSUserDefaults alloc] initWithSuiteName:@"com.outlook-attendance-reminder.pomodoro"]; }
 - (NSInteger)pomodoroMinutesForKey:(NSString *)key fallback:(NSInteger)fallback {
@@ -386,7 +428,7 @@
 - (void)showManager {
     self.buttons = [NSMutableArray array];
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,620) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"打刻リマインダー"; self.window.releasedWhenClosed = NO; [self.window center];
+    self.window.title = @"ときとも"; self.window.releasedWhenClosed = NO; [self.window center];
     ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.window.contentView = background;
     NSStackView *stack = [self verticalStack:16]; self.managerLayout = stack; stack.detachesHiddenViews = YES;
     [self.window.contentView addSubview:stack];
@@ -400,18 +442,11 @@
     [NSLayoutConstraint activateConstraints:@[[clock.widthAnchor constraintEqualToConstant:72], [clock.heightAnchor constraintEqualToConstant:72]]];
     clock.accessibilityLabel = @"笑顔の時計"; clock.accessibilityRole = NSAccessibilityImageRole;
     NSStackView *greeting = [self verticalStack:8];
-    [greeting addArrangedSubview:[self label:@"打刻のおとも" size:18 strong:YES muted:NO]];
-    [greeting addArrangedSubview:[self label:@"仕事のはじめと、おわりをお知らせ。" size:14 strong:NO muted:YES]];
-    NSButton *settings = [self button:@"" selector:@selector(openSettings:)];
-    settings.image = [NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:@"設定"];
-    settings.imagePosition = NSImageOnly; settings.bordered = NO; settings.imageScaling = NSImageScaleProportionallyDown;
-    settings.toolTip = @"設定"; settings.accessibilityLabel = @"設定";
-    [settings.widthAnchor constraintEqualToConstant:34].active = YES;
-    NSView *headerSpacer = [[NSView alloc] init];
-    [headerSpacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *header = [NSStackView stackViewWithViews:@[clock, greeting, headerSpacer, settings]]; header.spacing = 16; header.alignment = NSLayoutAttributeCenterY;
+    [greeting addArrangedSubview:[self label:@"ときとも" size:18 strong:YES muted:NO]];
+    [greeting addArrangedSubview:[self label:@"仕事の時間に、ちょうどいいひと区切り。" size:14 strong:NO muted:YES]];
+    [self addSettingsToTitlebar];
+    NSStackView *header = [NSStackView stackViewWithViews:@[clock, greeting]]; header.spacing = 16; header.alignment = NSLayoutAttributeCenterY;
     [stack addArrangedSubview:header]; [header.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    NSStackView *status = [self verticalStack:8];
     self.statusBadge = [self label:@"○ 確認中" size:15 strong:YES muted:NO];
     self.statusLabel = [self label:@"設定を確認しています…" size:13 strong:NO muted:YES];
     self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"打刻のお知らせを停止・再開します。ポモドーロは続きます";
@@ -420,17 +455,10 @@
     self.nextReminderDate = [self label:@"" size:18 strong:YES muted:NO]; self.nextReminderDate.hidden = YES;
     self.nextReminderDetail = [self label:@"" size:13 strong:NO muted:YES]; self.nextReminderDetail.hidden = YES;
     [next addArrangedSubview:self.nextReminderTitle]; [next addArrangedSubview:self.nextReminderDate]; [next addArrangedSubview:self.nextReminderDetail];
-    ReminderClock *nextClock = [[ReminderClock alloc] init]; nextClock.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[[nextClock.widthAnchor constraintEqualToConstant:48], [nextClock.heightAnchor constraintEqualToConstant:48]]];
-    NSStackView *nextRow = [NSStackView stackViewWithViews:@[nextClock, next]]; nextRow.spacing = 12; nextRow.alignment = NSLayoutAttributeCenterY;
-    [status addArrangedSubview:nextRow];
-    [nextRow.widthAnchor constraintEqualToAnchor:status.widthAnchor].active = YES;
-    [next.widthAnchor constraintEqualToAnchor:status.widthAnchor constant:-60].active = YES;
-    for (NSTextField *label in @[self.nextReminderTitle, self.nextReminderDate, self.nextReminderDetail]) [label.widthAnchor constraintEqualToAnchor:next.widthAnchor].active = YES;
-    NSView *statusCard = [self card:status]; [stack addArrangedSubview:statusCard];
+    ReminderClock *nextClock = [[ReminderClock alloc] init];
+    NSView *statusCard = [self summaryCardWithIcon:nextClock content:next actions:nil]; [stack addArrangedSubview:statusCard];
     [statusCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    self.pomodoroIllustration = [[PomodoroIllustration alloc] init]; self.pomodoroIllustration.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[[self.pomodoroIllustration.widthAnchor constraintEqualToConstant:56], [self.pomodoroIllustration.heightAnchor constraintEqualToConstant:56]]];
+    self.pomodoroIllustration = [[PomodoroIllustration alloc] init];
     self.pomodoroModeLabel = [self label:@"集中モード" size:15 strong:YES muted:NO];
     self.pomodoroTimerLabel = [self label:@"25:00" size:28 strong:YES muted:NO];
     self.pomodoroTimerLabel.font = [NSFont monospacedDigitSystemFontOfSize:28 weight:NSFontWeightSemibold];
@@ -445,10 +473,7 @@
     self.pomodoroStopButton.bordered = NO; [self.pomodoroStopButton.widthAnchor constraintEqualToConstant:48].active = YES;
     NSStackView *pomodoroActions = [NSStackView stackViewWithViews:@[self.pomodoroPrimaryButton, self.pomodoroStopButton]]; pomodoroActions.spacing = 12; pomodoroActions.detachesHiddenViews = NO;
     [pomodoroActions.widthAnchor constraintEqualToConstant:144].active = YES;
-    NSStackView *pomodoroRow = [NSStackView stackViewWithViews:@[self.pomodoroIllustration, pomodoroText, pomodoroActions]]; pomodoroRow.spacing = 12; pomodoroRow.alignment = NSLayoutAttributeCenterY;
-    [pomodoroText.widthAnchor constraintEqualToAnchor:pomodoroRow.widthAnchor constant:-224].active = YES;
-    [self.pomodoroModeLabel.widthAnchor constraintEqualToAnchor:pomodoroText.widthAnchor].active = YES;
-    NSView *pomodoroCard = [self card:pomodoroRow]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    NSView *pomodoroCard = [self summaryCardWithIcon:self.pomodoroIllustration content:pomodoroText actions:pomodoroActions]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.pomodoroRemainingSeconds = [self pomodoroFocusMinutes] * 60; [self updatePomodoroUI];
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
@@ -1076,8 +1101,8 @@
     [[NSWorkspace sharedWorkspace] openURLs:@[url] withApplicationAtURL:[NSURL fileURLWithPath:bundle] configuration:configuration completionHandler:^(NSRunningApplication *application, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
-                NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"打刻リマインダーを開けませんでした。";
-                alert.informativeText = @"アプリケーションから「打刻リマインダー」を開き直してください。"; [alert runModal];
+                NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"ときともを開けませんでした。";
+                alert.informativeText = @"アプリケーションから「ときとも」を開き直してください。"; [alert runModal];
             }
             [NSApp terminate:nil];
         });
@@ -1130,7 +1155,7 @@ int main(void) {
     @autoreleasepool {
         NSApplication *application = [NSApplication sharedApplication];
         [application setActivationPolicy:NSApplicationActivationPolicyRegular];
-        NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"打刻リマインダー";
+        NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"ときとも";
         NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
         NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:name action:nil keyEquivalent:@""];
         NSMenu *sub = [[NSMenu alloc] initWithTitle:name];
