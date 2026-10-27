@@ -63,6 +63,8 @@
 
 @interface ReminderController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
 @property NSWindow *window;
+@property NSWindow *settingsWindow;
+@property NSTextField *pomodoroSettingsSummary;
 @property NSTextField *statusLabel;
 @property NSTextField *statusBadge;
 @property NSTextField *nextReminderTitle;
@@ -132,6 +134,7 @@
     self.commandBusy = busy;
     if (busy) self.overviewRevision++;
     for (NSButton *button in self.buttons) button.enabled = !busy;
+    self.pomodoroStopButton.enabled = !busy && self.pomodoroRunning;
 }
 - (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
     [self runCommand:command input:input blocking:YES completion:completion];
@@ -164,7 +167,8 @@
     NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"打刻リマインダー";
     alert.icon = [self clockImage];
     alert.informativeText = message; [alert addButtonWithTitle:@"閉じる"];
-    [alert beginSheetModalForWindow:self.scheduleWindow.visible ? self.scheduleWindow : self.window completionHandler:nil];
+    NSWindow *parent = self.scheduleWindow.visible ? self.scheduleWindow : (self.settingsWindow.visible ? self.settingsWindow : self.window);
+    [alert beginSheetModalForWindow:parent completionHandler:nil];
 }
 - (NSString *)overviewDate:(NSString *)value format:(NSString *)format {
     if (![value isKindOfClass:NSString.class]) return @"";
@@ -186,7 +190,7 @@
     BOOL configured = [view[@"configured"] boolValue], enabled = [view[@"enabled"] boolValue];
     self.toggleButton.title = enabled ? @"通知を停止" : @"通知を再開";
     self.statusBadge.stringValue = configured ? @"● 週間予定を設定済み" : @"○ 予定はまだ未設定です";
-    self.statusLabel.stringValue = configured ? @"選んだ曜日の出勤・退勤時刻に合わせてお知らせします。" : @"「通知の予定を設定」から始めましょう。";
+    self.statusLabel.stringValue = configured ? @"出勤は予定の5分前、退勤は予定時刻に通知します。" : @"曜日と出勤・退勤時刻を設定してください。";
     NSDictionary *next = [view[@"nextReminder"] isKindOfClass:NSDictionary.class] ? view[@"nextReminder"] : nil;
     self.nextReminderDate.hidden = !next; self.nextReminderDetail.hidden = !next;
     if (next) {
@@ -197,6 +201,8 @@
     } else {
         self.nextReminderTitle.stringValue = !configured ? @"次のお知らせは、設定後に表示します" : !enabled ? @"お知らせはお休み中です" : @"向こう8日間に出勤・退勤の予定はありません";
         if (configured && !enabled) self.statusLabel.stringValue = @"通知は停止中です。「通知を再開」から再開できます。";
+        self.nextReminderDetail.hidden = configured && enabled;
+        self.nextReminderDetail.stringValue = !configured ? @"右上の設定から、曜日・出退勤時刻を設定してください。" : !enabled ? @"右上の設定で「通知を再開」できます。" : @"";
     }
     [self updateManagerLayout];
 }
@@ -222,7 +228,7 @@
 }
 - (void)refreshStatus { [self refreshOverview:YES]; }
 - (void)refreshOverviewTimer:(NSTimer *)timer {
-    if (self.window.visible && !self.window.attachedSheet && !self.scheduleWindow.visible) [self refreshOverview:NO];
+    if ((self.window.visible || self.settingsWindow.visible) && !self.window.attachedSheet && !self.settingsWindow.attachedSheet && !self.scheduleWindow.visible) [self refreshOverview:NO];
 }
 - (NSButton *)button:(NSString *)title selector:(SEL)selector {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:selector];
@@ -258,12 +264,6 @@
     ]];
     return card;
 }
-- (NSView *)scheduleCard:(BOOL)arrival {
-    NSStackView *stack = [self verticalStack:8];
-    [stack addArrangedSubview:[self label:arrival ? @"出勤のお知らせ" : @"退勤のお知らせ" size:15 strong:YES muted:NO]];
-    [stack addArrangedSubview:[self label:arrival ? @"予定の5分前" : @"予定時刻になったら" size:18 strong:YES muted:NO]];
-    return [self card:stack];
-}
 - (NSUserDefaults *)pomodoroPreferences { return [[NSUserDefaults alloc] initWithSuiteName:@"com.outlook-attendance-reminder.pomodoro"]; }
 - (NSInteger)pomodoroMinutesForKey:(NSString *)key fallback:(NSInteger)fallback {
     NSInteger value = [[self pomodoroPreferences] integerForKey:key];
@@ -284,10 +284,13 @@
     NSString *mode = self.pomodoroResting ? @"休憩モード" : @"集中モード";
     self.pomodoroModeLabel.stringValue = self.pomodoroPaused ? [mode stringByAppendingString:@"を一時停止中"] : mode;
     self.pomodoroTimerLabel.stringValue = [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)remainder];
-    self.pomodoroDetailLabel.stringValue = [NSString stringWithFormat:@"集中 %ld分 → 休憩 %ld分を、停止するまで繰り返します。", (long)[self pomodoroFocusMinutes], (long)[self pomodoroBreakMinutes]];
+    self.pomodoroDetailLabel.stringValue = [NSString stringWithFormat:@"集中 %ld分・休憩 %ld分", (long)[self pomodoroFocusMinutes], (long)[self pomodoroBreakMinutes]];
+    self.pomodoroSettingsSummary.stringValue = self.pomodoroDetailLabel.stringValue;
     self.pomodoroIllustration.resting = self.pomodoroResting; [self.pomodoroIllustration setNeedsDisplay:YES];
     self.pomodoroPrimaryButton.title = self.pomodoroRunning ? (self.pomodoroPaused ? @"再開" : @"一時停止") : @"開始";
-    self.pomodoroStopButton.enabled = self.pomodoroRunning;
+    self.pomodoroStopButton.hidden = !self.pomodoroRunning;
+    self.pomodoroStopButton.enabled = self.pomodoroRunning && !self.commandBusy;
+    self.pomodoroPrimaryButton.toolTip = self.pomodoroRunning ? (self.pomodoroPaused ? @"残り時間から再開します" : @"集中・休憩タイマーを一時停止します") : @"集中と休憩を交互に始めます";
     [self updateManagerLayout];
 }
 - (void)showPomodoroTransition {
@@ -344,7 +347,41 @@
         if (!self.pomodoroRunning) self.pomodoroRemainingSeconds = focusMinutes * 60;
         [self updatePomodoroUI];
     };
-    if (self.window.visible) [alert beginSheetModalForWindow:self.window completionHandler:completion]; else completion([alert runModal]);
+    NSWindow *parent = self.settingsWindow.visible ? self.settingsWindow : self.window;
+    if (parent.visible) [alert beginSheetModalForWindow:parent completionHandler:completion]; else completion([alert runModal]);
+}
+- (void)openSettings:(id)sender {
+    if (!self.settingsWindow) {
+        self.settingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,360) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+        self.settingsWindow.title = @"設定"; self.settingsWindow.releasedWhenClosed = NO;
+        ReminderCard *background = [[ReminderCard alloc] init]; background.canvas = YES; self.settingsWindow.contentView = background;
+        NSStackView *stack = [self verticalStack:16]; [background addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:background.leadingAnchor constant:24],
+            [stack.trailingAnchor constraintEqualToAnchor:background.trailingAnchor constant:-24],
+            [stack.topAnchor constraintEqualToAnchor:background.topAnchor constant:24],
+            [stack.bottomAnchor constraintLessThanOrEqualToAnchor:background.bottomAnchor constant:-24]
+        ]];
+        NSStackView *attendance = [self verticalStack:12];
+        [attendance addArrangedSubview:[self label:@"打刻のお知らせ" size:18 strong:YES muted:NO]];
+        [attendance addArrangedSubview:self.statusBadge]; [attendance addArrangedSubview:self.statusLabel];
+        NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"曜日ごとの出勤・退勤時刻を設定します";
+        NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知画面を確認します。再通知は予約しません";
+        NSStackView *actions = [NSStackView stackViewWithViews:@[configure, self.toggleButton, test]]; actions.spacing = 12; actions.alignment = NSLayoutAttributeCenterY;
+        [attendance addArrangedSubview:actions];
+        NSView *attendanceCard = [self card:attendance]; [stack addArrangedSubview:attendanceCard]; [attendanceCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        [self.statusLabel.widthAnchor constraintEqualToAnchor:attendance.widthAnchor].active = YES;
+        NSStackView *pomodoro = [self verticalStack:12];
+        [pomodoro addArrangedSubview:[self label:@"ポモドーロ" size:18 strong:YES muted:NO]];
+        self.pomodoroSettingsSummary = [self label:self.pomodoroDetailLabel.stringValue size:14 strong:NO muted:YES]; [pomodoro addArrangedSubview:self.pomodoroSettingsSummary];
+        self.pomodoroSettingsButton = [self button:@"時間を設定" selector:@selector(configurePomodoro:)]; self.pomodoroSettingsButton.toolTip = @"集中と休憩の時間を変更します";
+        [pomodoro addArrangedSubview:self.pomodoroSettingsButton];
+        NSView *pomodoroCard = [self card:pomodoro]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+        [background layoutSubtreeIfNeeded];
+        [self.settingsWindow setContentSize:NSMakeSize(560, ceil(stack.fittingSize.height + 48))]; [self.settingsWindow center];
+    }
+    [self.settingsWindow makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    [self refreshStatus];
 }
 - (void)showManager {
     self.buttons = [NSMutableArray array];
@@ -365,11 +402,19 @@
     NSStackView *greeting = [self verticalStack:8];
     [greeting addArrangedSubview:[self label:@"打刻のおとも" size:18 strong:YES muted:NO]];
     [greeting addArrangedSubview:[self label:@"仕事のはじめと、おわりをお知らせ。" size:14 strong:NO muted:YES]];
-    NSStackView *header = [NSStackView stackViewWithViews:@[clock, greeting]]; header.spacing = 16; header.alignment = NSLayoutAttributeCenterY;
-    [stack addArrangedSubview:header];
+    NSButton *settings = [self button:@"" selector:@selector(openSettings:)];
+    settings.image = [NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:@"設定"];
+    settings.imagePosition = NSImageOnly; settings.bordered = NO; settings.imageScaling = NSImageScaleProportionallyDown;
+    settings.toolTip = @"設定"; settings.accessibilityLabel = @"設定";
+    [settings.widthAnchor constraintEqualToConstant:34].active = YES;
+    NSView *headerSpacer = [[NSView alloc] init];
+    [headerSpacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *header = [NSStackView stackViewWithViews:@[clock, greeting, headerSpacer, settings]]; header.spacing = 16; header.alignment = NSLayoutAttributeCenterY;
+    [stack addArrangedSubview:header]; [header.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     NSStackView *status = [self verticalStack:8];
-    self.statusBadge = [self label:@"○ 確認中" size:15 strong:YES muted:NO]; [status addArrangedSubview:self.statusBadge];
-    self.statusLabel = [self label:@"設定を確認しています…" size:13 strong:NO muted:YES]; [status addArrangedSubview:self.statusLabel];
+    self.statusBadge = [self label:@"○ 確認中" size:15 strong:YES muted:NO];
+    self.statusLabel = [self label:@"設定を確認しています…" size:13 strong:NO muted:YES];
+    self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"打刻のお知らせを停止・再開します。ポモドーロは続きます";
     NSStackView *next = [self verticalStack:4]; next.detachesHiddenViews = YES;
     self.nextReminderTitle = [self label:@"次のお知らせを確認しています…" size:15 strong:YES muted:NO];
     self.nextReminderDate = [self label:@"" size:18 strong:YES muted:NO]; self.nextReminderDate.hidden = YES;
@@ -378,37 +423,37 @@
     ReminderClock *nextClock = [[ReminderClock alloc] init]; nextClock.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[[nextClock.widthAnchor constraintEqualToConstant:48], [nextClock.heightAnchor constraintEqualToConstant:48]]];
     NSStackView *nextRow = [NSStackView stackViewWithViews:@[nextClock, next]]; nextRow.spacing = 12; nextRow.alignment = NSLayoutAttributeCenterY;
-    [status addArrangedSubview:nextRow]; [status setCustomSpacing:16 afterView:self.statusLabel];
+    [status addArrangedSubview:nextRow];
     [nextRow.widthAnchor constraintEqualToAnchor:status.widthAnchor].active = YES;
     [next.widthAnchor constraintEqualToAnchor:status.widthAnchor constant:-60].active = YES;
     for (NSTextField *label in @[self.nextReminderTitle, self.nextReminderDate, self.nextReminderDetail]) [label.widthAnchor constraintEqualToAnchor:next.widthAnchor].active = YES;
     NSView *statusCard = [self card:status]; [stack addArrangedSubview:statusCard];
     [statusCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [self.statusLabel.widthAnchor constraintEqualToAnchor:status.widthAnchor].active = YES;
-    NSStackView *schedule = [NSStackView stackViewWithViews:@[[self scheduleCard:YES], [self scheduleCard:NO]]];
-    schedule.spacing = 16; schedule.distribution = NSStackViewDistributionFillEqually; schedule.alignment = NSLayoutAttributeTop;
-    [stack addArrangedSubview:schedule]; [schedule.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.pomodoroIllustration = [[PomodoroIllustration alloc] init]; self.pomodoroIllustration.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[[self.pomodoroIllustration.widthAnchor constraintEqualToConstant:56], [self.pomodoroIllustration.heightAnchor constraintEqualToConstant:56]]];
     self.pomodoroModeLabel = [self label:@"集中モード" size:15 strong:YES muted:NO];
-    self.pomodoroTimerLabel = [self label:@"25:00" size:26 strong:YES muted:NO];
-    self.pomodoroDetailLabel = [self label:@"集中 25分 → 休憩 5分を、停止するまで繰り返します。" size:13 strong:NO muted:YES];
+    self.pomodoroTimerLabel = [self label:@"25:00" size:28 strong:YES muted:NO];
+    self.pomodoroTimerLabel.font = [NSFont monospacedDigitSystemFontOfSize:28 weight:NSFontWeightSemibold];
+    self.pomodoroDetailLabel = [self label:@"" size:13 strong:NO muted:YES];
     NSStackView *pomodoroText = [self verticalStack:3]; [pomodoroText addArrangedSubview:self.pomodoroModeLabel]; [pomodoroText addArrangedSubview:self.pomodoroTimerLabel]; [pomodoroText addArrangedSubview:self.pomodoroDetailLabel];
-    NSStackView *pomodoroRow = [NSStackView stackViewWithViews:@[self.pomodoroIllustration, pomodoroText]]; pomodoroRow.spacing = 12; pomodoroRow.alignment = NSLayoutAttributeCenterY;
-    [pomodoroText.widthAnchor constraintEqualToAnchor:pomodoroRow.widthAnchor constant:-68].active = YES;
-    NSView *pomodoroCard = [self card:pomodoroRow]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.pomodoroPrimaryButton = [self button:@"開始" selector:@selector(pauseOrResumePomodoro:)]; self.pomodoroPrimaryButton.toolTip = @"集中と休憩を交互に始めます";
-    self.pomodoroStopButton = [self button:@"終了" selector:@selector(stopPomodoro:)]; self.pomodoroStopButton.toolTip = @"ポモドーロを終了し、25分から戻します";
-    self.pomodoroSettingsButton = [self button:@"時間を設定" selector:@selector(configurePomodoro:)]; self.pomodoroSettingsButton.toolTip = @"集中と休憩の時間を変更します";
-    NSStackView *pomodoroActions = [NSStackView stackViewWithViews:@[self.pomodoroPrimaryButton, self.pomodoroStopButton, self.pomodoroSettingsButton]]; pomodoroActions.spacing = 12; [stack addArrangedSubview:pomodoroActions];
+    [self.pomodoroPrimaryButton.widthAnchor constraintEqualToConstant:84].active = YES;
+    self.pomodoroPrimaryButton.bezelColor = [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
+        __block NSColor *color; [appearance performAsCurrentDrawingAppearance:^{ color = ReminderColor(@"primary"); }]; return color;
+    }];
+    self.pomodoroStopButton = [self button:@"終了" selector:@selector(stopPomodoro:)]; self.pomodoroStopButton.toolTip = @"ポモドーロを終了し、設定した集中時間に戻します";
+    self.pomodoroStopButton.bordered = NO; [self.pomodoroStopButton.widthAnchor constraintEqualToConstant:48].active = YES;
+    NSStackView *pomodoroActions = [NSStackView stackViewWithViews:@[self.pomodoroPrimaryButton, self.pomodoroStopButton]]; pomodoroActions.spacing = 12; pomodoroActions.detachesHiddenViews = NO;
+    [pomodoroActions.widthAnchor constraintEqualToConstant:144].active = YES;
+    NSStackView *pomodoroRow = [NSStackView stackViewWithViews:@[self.pomodoroIllustration, pomodoroText, pomodoroActions]]; pomodoroRow.spacing = 12; pomodoroRow.alignment = NSLayoutAttributeCenterY;
+    [pomodoroText.widthAnchor constraintEqualToAnchor:pomodoroRow.widthAnchor constant:-224].active = YES;
+    [self.pomodoroModeLabel.widthAnchor constraintEqualToAnchor:pomodoroText.widthAnchor].active = YES;
+    NSView *pomodoroCard = [self card:pomodoroRow]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.pomodoroRemainingSeconds = [self pomodoroFocusMinutes] * 60; [self updatePomodoroUI];
-    NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"曜日ごとの出勤・退勤時刻を設定します";
-    NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知内のKING OF TIMEと再通知の選択肢を確認します。再通知は予約しません";
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
-    NSStackView *actions = [NSStackView stackViewWithViews:@[configure, test, recorder]]; actions.spacing = 12; [stack addArrangedSubview:actions];
-    self.toggleButton = [self button:@"通知を再開" selector:@selector(toggle:)]; self.toggleButton.toolTip = @"通知の停止・再開は、Macを再起動しても維持されます";
     NSButton *help = [self button:@"使い方" selector:@selector(help:)];
-    NSStackView *secondary = [NSStackView stackViewWithViews:@[self.toggleButton, help]]; secondary.spacing = 12; [stack addArrangedSubview:secondary];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[recorder, help]]; actions.spacing = 12; [stack addArrangedSubview:actions];
+    [self updateManagerLayout]; [self.window center];
     NSImage *appIcon = [[NSImage alloc] initWithContentsOfFile:[[self resources] stringByAppendingPathComponent:@"AppIcon.icns"]];
     [NSApp setApplicationIconImage:appIcon ?: [self clockImage]];
     if (!self.launching) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
@@ -875,7 +920,7 @@
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\nポモドーロは「開始」で集中と休憩を交互に繰り返します。一時停止中は、同じ場所の「再開」から続けられます。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。出勤の通知では退勤ボタンを隠し、退勤の通知では出勤ボタンを隠します。「両方表示」で両方出せます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"右上の歯車から設定を開き、「通知の予定を設定」で月〜金の出勤・退勤時刻を入力してください。出勤は5分前、退勤は予定時刻に通知します。通知の停止・再開と表示テストも設定から行えます。\n\nポモドーロは「開始」で集中と休憩を繰り返します。「一時停止」「再開」で中断・再開し、「終了」で止められます。時間の変更は設定の「ポモドーロ」から行います。\n\n「KING OF TIMEで打刻」や通知の「打刻画面を開く」から、公式の打刻画面を表示します。まだ仕事中なら通知の再通知を選べます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";

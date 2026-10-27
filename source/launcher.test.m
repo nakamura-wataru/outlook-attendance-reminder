@@ -1,4 +1,4 @@
-// Exercise routing and timers without opening windows, loading websites, or
+// Exercise native windows, routing and timers without loading websites or
 // reading/writing the user's calendar configuration.
 #define main AttendanceApplicationMain
 #include "launcher.m"
@@ -101,6 +101,23 @@
 - (void)showPomodoroTransition { self.announcements++; }
 - (void)updateManagerLayout {}
 @end
+@interface ManagerWindowProbe : ScheduleWindowProbe
+@end
+@implementation ManagerWindowProbe
+- (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
+    if ([command isEqualToString:@"ensure"]) completion(YES, @"");
+    else [super runCommand:command input:input completion:completion];
+}
+- (void)runCommand:(NSString *)command input:(NSString *)input blocking:(BOOL)blocking completion:(void (^)(BOOL, NSString *))completion {
+    completion(YES, @"{\"configured\":true,\"enabled\":true,\"nextReminder\":null}");
+}
+- (void)showPomodoroTransition {}
+@end
+static NSButton *ButtonForAction(NSView *view, SEL action) {
+    if ([view isKindOfClass:NSButton.class] && ((NSButton *)view).action == action) return (NSButton *)view;
+    for (NSView *child in view.subviews) { NSButton *button = ButtonForAction(child, action); if (button) return button; }
+    return nil;
+}
 static void Check(BOOL passed, NSString *message) {
     if (!passed) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
@@ -184,6 +201,30 @@ int main(void) {
         Check(scheduleWindow.scheduleWindow.visible && scheduleWindow.commonStartPicker && scheduleWindow.commonEndPicker && scheduleWindow.applyCommonScheduleButton, @"Schedule button opens a configured settings window");
         [scheduleWindow.scheduleWindow orderOut:nil];
         puts("PASS: schedule settings open from the main action");
+        ManagerWindowProbe *manager = [[ManagerWindowProbe alloc] init]; [manager showManager];
+        NSButton *gear = ButtonForAction(manager.window.contentView, @selector(openSettings:));
+        Check(gear && ButtonForAction(manager.window.contentView, @selector(help:)) && ButtonForAction(manager.window.contentView, @selector(openRecorder:)), @"Main keeps settings, help and the recorder accessible");
+        for (NSString *action in @[@"configureSchedule:", @"configurePomodoro:", @"testReminder:", @"toggle:"]) Check(!ButtonForAction(manager.window.contentView, NSSelectorFromString(action)), @"Secondary actions no longer appear on main");
+        Check(manager.pomodoroStopButton.hidden, @"An idle Pomodoro does not display an end action");
+        [gear performClick:nil]; NSWindow *settings = manager.settingsWindow;
+        Check(settings.visible, @"The gear opens settings");
+        for (NSString *action in @[@"configureSchedule:", @"configurePomodoro:", @"testReminder:", @"toggle:"]) Check(ButtonForAction(settings.contentView, NSSelectorFromString(action)) != nil, @"Settings keeps every relocated action accessible");
+        Check([manager.toggleButton.title isEqual:@"通知を停止"], @"Opening settings uses the current reminder state");
+        [ButtonForAction(settings.contentView, @selector(configureSchedule:)) performClick:nil];
+        Check(manager.scheduleWindow.visible && manager.startPickers.count == 5, @"The schedule editor opens from settings with all weekdays");
+        [manager.scheduleWindow orderOut:nil];
+        [ButtonForAction(settings.contentView, @selector(configurePomodoro:)) performClick:nil];
+        Check(settings.attachedSheet != nil && manager.window.attachedSheet == nil, @"Pomodoro editing attaches to the settings window");
+        [settings endSheet:settings.attachedSheet returnCode:NSAlertSecondButtonReturn];
+        [settings orderOut:nil]; [gear performClick:nil]; Check(manager.settingsWindow == settings, @"Reopening settings reuses the same window");
+        [manager startPomodoro:nil]; [manager.window.contentView layoutSubtreeIfNeeded];
+        NSRect actionBefore = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
+        [manager pauseOrResumePomodoro:nil]; [manager.window.contentView layoutSubtreeIfNeeded];
+        NSRect actionAfter = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
+        Check(NSEqualRects(actionBefore, actionAfter) && [manager.pomodoroPrimaryButton.title isEqual:@"再開"] && !manager.pomodoroStopButton.hidden, @"Pause and resume stay in place while end remains available");
+        [manager stopPomodoro:nil]; Check(manager.pomodoroStopButton.hidden, @"Ending the timer hides end again");
+        [manager.overviewTimer invalidate]; [manager.window orderOut:nil]; [manager.settingsWindow orderOut:nil];
+        puts("PASS: compact main screen routes settings without losing timer controls");
         WindowProbe *window = [[WindowProbe alloc] init];
         RecorderIntentProbe *intent = [[RecorderIntentProbe alloc] init]; intent.notificationMode = YES; intent.allowed = YES;
         [intent showRecorder]; Check(intent.loads == 0, @"A closed notification cannot load the recorder");
