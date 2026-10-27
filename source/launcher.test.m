@@ -92,6 +92,15 @@
 @implementation CommandOutputProbe
 - (NSString *)resources { return self.fixtureResources; }
 @end
+@interface PomodoroProbe : ReminderController
+@property NSUInteger announcements;
+@end
+@implementation PomodoroProbe
+- (NSInteger)pomodoroFocusMinutes { return 25; }
+- (NSInteger)pomodoroBreakMinutes { return 5; }
+- (void)showPomodoroTransition { self.announcements++; }
+- (void)updateManagerLayout {}
+@end
 static void Check(BOOL passed, NSString *message) {
     if (!passed) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
@@ -127,6 +136,21 @@ int main(void) {
         view[@"configured"] = @YES; view[@"enabled"] = @NO; [overview applyOverview:view];
         Check([overview.nextReminderTitle.stringValue isEqual:@"お知らせはお休み中です"] && [overview.toggleButton.title isEqual:@"通知を再開"], @"Stopped notifications do not advertise a scheduled reminder");
         puts("PASS: overview distinguishes configured, unconfigured, and stopped states");
+        PomodoroProbe *pomodoro = [[PomodoroProbe alloc] init];
+        pomodoro.pomodoroModeLabel = [NSTextField labelWithString:@""]; pomodoro.pomodoroTimerLabel = [NSTextField labelWithString:@""];
+        pomodoro.pomodoroDetailLabel = [NSTextField labelWithString:@""]; pomodoro.pomodoroIllustration = [[PomodoroIllustration alloc] init];
+        pomodoro.pomodoroPrimaryButton = [NSButton new]; pomodoro.pomodoroStopButton = [NSButton new];
+        [pomodoro startPomodoro:nil];
+        Check(pomodoro.pomodoroRunning && !pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 1500 && pomodoro.announcements == 1, @"Pomodoro starts in a 25 minute focus mode");
+        [pomodoro pauseOrResumePomodoro:nil];
+        Check(pomodoro.pomodoroPaused && [pomodoro.pomodoroPrimaryButton.title isEqual:@"再開"] && !pomodoro.pomodoroTimer.valid, @"The same action changes from pause to resume");
+        [pomodoro pauseOrResumePomodoro:nil]; pomodoro.pomodoroRemainingSeconds = 1; [pomodoro pomodoroTick:nil];
+        Check(!pomodoro.pomodoroPaused && pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 300 && pomodoro.announcements == 2, @"Focus automatically changes to a five minute break");
+        NSApplication *pomodoroApplication = [NSApplication sharedApplication];
+        Check(![pomodoro applicationShouldTerminateAfterLastWindowClosed:pomodoroApplication], @"An active Pomodoro survives closing the window");
+        [pomodoro stopPomodoro:nil];
+        Check(!pomodoro.pomodoroRunning && [pomodoro.pomodoroPrimaryButton.title isEqual:@"開始"] && pomodoro.pomodoroRemainingSeconds == 1500, @"Stopping returns the timer to its focus duration");
+        puts("PASS: Pomodoro repeats focus and short breaks until stopped");
         ScheduleSaveProbe *scheduleSave = [[ScheduleSaveProbe alloc] init];
         NSMutableArray *days = [NSMutableArray array], *starts = [NSMutableArray array], *ends = [NSMutableArray array];
         for (NSUInteger index = 0; index < 5; index++) {

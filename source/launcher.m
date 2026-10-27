@@ -22,6 +22,45 @@
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self setNeedsDisplay:YES]; }
 @end
 
+@interface PomodoroIllustration : NSView
+@property BOOL resting;
+@end
+@implementation PomodoroIllustration
+- (void)drawRect:(NSRect)dirtyRect {
+    CGFloat size = MIN(self.bounds.size.width, self.bounds.size.height);
+    CGFloat x = NSMidX(self.bounds) - size / 2, y = NSMidY(self.bounds) - size / 2;
+    [ReminderColor(@"primary-soft") setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x, y, size, size)] fill];
+    NSRect face = NSMakeRect(x + size * .18, y + size * .18, size * .64, size * .64);
+    [ReminderColor(@"canvas") setFill];
+    NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:face]; [circle fill];
+    [ReminderColor(@"primary") setStroke]; circle.lineWidth = size * .035; [circle stroke];
+    if (self.resting) {
+        NSBezierPath *eyes = [NSBezierPath bezierPath]; eyes.lineWidth = size * .035; eyes.lineCapStyle = NSLineCapStyleRound;
+        [eyes moveToPoint:NSMakePoint(x + size * .35, y + size * .50)]; [eyes lineToPoint:NSMakePoint(x + size * .44, y + size * .46)];
+        [eyes moveToPoint:NSMakePoint(x + size * .56, y + size * .46)]; [eyes lineToPoint:NSMakePoint(x + size * .65, y + size * .50)]; [eyes stroke];
+        [ReminderColor(@"ink-mute") setFill];
+        NSDictionary *attributes = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:size * .20], NSForegroundColorAttributeName: ReminderColor(@"ink-mute")};
+        [@"z" drawAtPoint:NSMakePoint(x + size * .67, y + size * .66) withAttributes:attributes];
+    } else {
+        [ReminderColor(@"ink") setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x + size * .34, y + size * .48, size * .07, size * .07)] fill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x + size * .59, y + size * .48, size * .07, size * .07)] fill];
+        NSBezierPath *smile = [NSBezierPath bezierPath]; smile.lineWidth = size * .035; smile.lineCapStyle = NSLineCapStyleRound;
+        [smile moveToPoint:NSMakePoint(x + size * .41, y + size * .36)];
+        [smile curveToPoint:NSMakePoint(x + size * .59, y + size * .36) controlPoint1:NSMakePoint(x + size * .45, y + size * .29) controlPoint2:NSMakePoint(x + size * .55, y + size * .29)]; [smile stroke];
+        [ReminderColor(@"primary") setStroke];
+        for (NSNumber *angle in @[@0, @90, @180, @270]) {
+            CGFloat radians = angle.doubleValue * M_PI / 180.0;
+            NSPoint start = NSMakePoint(x + size * .5 + cos(radians) * size * .39, y + size * .5 + sin(radians) * size * .39);
+            NSPoint end = NSMakePoint(x + size * .5 + cos(radians) * size * .47, y + size * .5 + sin(radians) * size * .47);
+            NSBezierPath *ray = [NSBezierPath bezierPath]; ray.lineWidth = size * .03; [ray moveToPoint:start]; [ray lineToPoint:end]; [ray stroke];
+        }
+    }
+}
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self setNeedsDisplay:YES]; }
+@end
+
 @interface ReminderController : NSObject <NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
 @property NSWindow *window;
 @property NSTextField *statusLabel;
@@ -72,6 +111,18 @@
 @property BOOL notificationRecorderOpen;
 @property BOOL recorderShowsBothPunches;
 @property NSButton *showBothPunchesButton;
+@property NSTextField *pomodoroModeLabel;
+@property NSTextField *pomodoroTimerLabel;
+@property NSTextField *pomodoroDetailLabel;
+@property PomodoroIllustration *pomodoroIllustration;
+@property NSButton *pomodoroPrimaryButton;
+@property NSButton *pomodoroStopButton;
+@property NSButton *pomodoroSettingsButton;
+@property NSTimer *pomodoroTimer;
+@property BOOL pomodoroRunning;
+@property BOOL pomodoroPaused;
+@property BOOL pomodoroResting;
+@property NSInteger pomodoroRemainingSeconds;
 - (NSString *)blockedPunchLabel;
 @end
 
@@ -213,6 +264,88 @@
     [stack addArrangedSubview:[self label:arrival ? @"予定の5分前" : @"予定時刻になったら" size:18 strong:YES muted:NO]];
     return [self card:stack];
 }
+- (NSUserDefaults *)pomodoroPreferences { return [[NSUserDefaults alloc] initWithSuiteName:@"com.outlook-attendance-reminder.pomodoro"]; }
+- (NSInteger)pomodoroMinutesForKey:(NSString *)key fallback:(NSInteger)fallback {
+    NSInteger value = [[self pomodoroPreferences] integerForKey:key];
+    return value >= 1 && value <= 120 ? value : fallback;
+}
+- (NSInteger)pomodoroFocusMinutes { return [self pomodoroMinutesForKey:@"focusMinutes" fallback:25]; }
+- (NSInteger)pomodoroBreakMinutes { return [self pomodoroMinutesForKey:@"breakMinutes" fallback:5]; }
+- (NSInteger)pomodoroCurrentDurationSeconds { return (self.pomodoroResting ? [self pomodoroBreakMinutes] : [self pomodoroFocusMinutes]) * 60; }
+- (NSImage *)pomodoroImageForResting:(BOOL)resting {
+    return [NSImage imageWithSize:NSMakeSize(128, 128) flipped:NO drawingHandler:^BOOL(NSRect rect) {
+        PomodoroIllustration *illustration = [[PomodoroIllustration alloc] initWithFrame:rect]; illustration.resting = resting; [illustration drawRect:rect]; return YES;
+    }];
+}
+- (void)updatePomodoroUI {
+    if (!self.pomodoroModeLabel) return;
+    NSInteger seconds = MAX(0, self.pomodoroRemainingSeconds);
+    NSInteger minutes = seconds / 60, remainder = seconds % 60;
+    NSString *mode = self.pomodoroResting ? @"休憩モード" : @"集中モード";
+    self.pomodoroModeLabel.stringValue = self.pomodoroPaused ? [mode stringByAppendingString:@"を一時停止中"] : mode;
+    self.pomodoroTimerLabel.stringValue = [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)remainder];
+    self.pomodoroDetailLabel.stringValue = [NSString stringWithFormat:@"集中 %ld分 → 休憩 %ld分を、停止するまで繰り返します。", (long)[self pomodoroFocusMinutes], (long)[self pomodoroBreakMinutes]];
+    self.pomodoroIllustration.resting = self.pomodoroResting; [self.pomodoroIllustration setNeedsDisplay:YES];
+    self.pomodoroPrimaryButton.title = self.pomodoroRunning ? (self.pomodoroPaused ? @"再開" : @"一時停止") : @"開始";
+    self.pomodoroStopButton.enabled = self.pomodoroRunning;
+    [self updateManagerLayout];
+}
+- (void)showPomodoroTransition {
+    NSAlert *alert = [[NSAlert alloc] init]; BOOL resting = self.pomodoroResting;
+    alert.messageText = resting ? @"休憩をはじめましょう" : @"集中モードをはじめます";
+    alert.informativeText = resting ? [NSString stringWithFormat:@"%ld分間、ひと息つきましょう。終わると自動で集中モードに戻ります。", (long)[self pomodoroBreakMinutes]] : [NSString stringWithFormat:@"%ld分間、ひとつのことに取り組みましょう。終わると休憩モードに切り替わります。", (long)[self pomodoroFocusMinutes]];
+    alert.icon = [self pomodoroImageForResting:resting]; [alert addButtonWithTitle:@"続ける"];
+    if (self.window) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [alert beginSheetModalForWindow:self.window completionHandler:nil]; }
+}
+- (void)startPomodoroTimer {
+    [self.pomodoroTimer invalidate];
+    self.pomodoroTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(pomodoroTick:) userInfo:nil repeats:YES];
+}
+- (void)startPomodoroMode:(BOOL)resting announce:(BOOL)announce {
+    self.pomodoroResting = resting; self.pomodoroRemainingSeconds = [self pomodoroCurrentDurationSeconds];
+    self.pomodoroRunning = YES; self.pomodoroPaused = NO; [self startPomodoroTimer]; [self updatePomodoroUI];
+    if (announce) [self showPomodoroTransition];
+}
+- (void)startPomodoro:(id)sender { [self startPomodoroMode:NO announce:YES]; }
+- (void)pauseOrResumePomodoro:(id)sender {
+    if (!self.pomodoroRunning) { [self startPomodoro:nil]; return; }
+    self.pomodoroPaused = !self.pomodoroPaused;
+    if (self.pomodoroPaused) { [self.pomodoroTimer invalidate]; self.pomodoroTimer = nil; }
+    else [self startPomodoroTimer];
+    [self updatePomodoroUI];
+}
+- (void)stopPomodoro:(id)sender {
+    [self.pomodoroTimer invalidate]; self.pomodoroTimer = nil;
+    self.pomodoroRunning = NO; self.pomodoroPaused = NO; self.pomodoroResting = NO;
+    self.pomodoroRemainingSeconds = [self pomodoroFocusMinutes] * 60; [self updatePomodoroUI];
+}
+- (void)pomodoroTick:(NSTimer *)timer {
+    if (!self.pomodoroRunning || self.pomodoroPaused) return;
+    self.pomodoroRemainingSeconds--;
+    if (self.pomodoroRemainingSeconds <= 0) [self startPomodoroMode:!self.pomodoroResting announce:YES];
+    else [self updatePomodoroUI];
+}
+- (void)configurePomodoro:(id)sender {
+    NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"ポモドーロの設定"; alert.icon = [self pomodoroImageForResting:NO];
+    alert.informativeText = @"集中と休憩の長さを分で設定できます。進行中の場合は、次のモードから反映します。";
+    NSStackView *fields = [self verticalStack:8]; fields.frame = NSMakeRect(0, 0, 300, 68);
+    NSTextField *focus = [NSTextField textFieldWithString:[NSString stringWithFormat:@"%ld", (long)[self pomodoroFocusMinutes]]];
+    NSTextField *breakField = [NSTextField textFieldWithString:[NSString stringWithFormat:@"%ld", (long)[self pomodoroBreakMinutes]]];
+    for (NSTextField *field in @[focus, breakField]) { field.alignment = NSTextAlignmentRight; field.formatter = [[NSNumberFormatter alloc] init]; [field.widthAnchor constraintEqualToConstant:56].active = YES; }
+    NSStackView *focusRow = [NSStackView stackViewWithViews:@[[self label:@"集中" size:14 strong:YES muted:NO], focus, [self label:@"分" size:14 strong:NO muted:YES]]]; focusRow.spacing = 8;
+    NSStackView *breakRow = [NSStackView stackViewWithViews:@[[self label:@"休憩" size:14 strong:YES muted:NO], breakField, [self label:@"分" size:14 strong:NO muted:YES]]]; breakRow.spacing = 8;
+    [fields addArrangedSubview:focusRow]; [fields addArrangedSubview:breakRow]; alert.accessoryView = fields;
+    [alert addButtonWithTitle:@"保存"]; [alert addButtonWithTitle:@"キャンセル"];
+    void (^completion)(NSModalResponse) = ^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSInteger focusMinutes = focus.integerValue, breakMinutes = breakField.integerValue;
+        if (focusMinutes < 1 || focusMinutes > 120 || breakMinutes < 1 || breakMinutes > 120) { [self showMessage:@"集中と休憩は、1〜120分で入力してください。"]; return; }
+        NSUserDefaults *prefs = [self pomodoroPreferences]; [prefs setInteger:focusMinutes forKey:@"focusMinutes"]; [prefs setInteger:breakMinutes forKey:@"breakMinutes"];
+        if (!self.pomodoroRunning) self.pomodoroRemainingSeconds = focusMinutes * 60;
+        [self updatePomodoroUI];
+    };
+    if (self.window.visible) [alert beginSheetModalForWindow:self.window completionHandler:completion]; else completion([alert runModal]);
+}
 - (void)showManager {
     self.buttons = [NSMutableArray array];
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,620) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
@@ -255,6 +388,20 @@
     NSStackView *schedule = [NSStackView stackViewWithViews:@[[self scheduleCard:YES], [self scheduleCard:NO]]];
     schedule.spacing = 16; schedule.distribution = NSStackViewDistributionFillEqually; schedule.alignment = NSLayoutAttributeTop;
     [stack addArrangedSubview:schedule]; [schedule.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    self.pomodoroIllustration = [[PomodoroIllustration alloc] init]; self.pomodoroIllustration.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[[self.pomodoroIllustration.widthAnchor constraintEqualToConstant:56], [self.pomodoroIllustration.heightAnchor constraintEqualToConstant:56]]];
+    self.pomodoroModeLabel = [self label:@"集中モード" size:15 strong:YES muted:NO];
+    self.pomodoroTimerLabel = [self label:@"25:00" size:26 strong:YES muted:NO];
+    self.pomodoroDetailLabel = [self label:@"集中 25分 → 休憩 5分を、停止するまで繰り返します。" size:13 strong:NO muted:YES];
+    NSStackView *pomodoroText = [self verticalStack:3]; [pomodoroText addArrangedSubview:self.pomodoroModeLabel]; [pomodoroText addArrangedSubview:self.pomodoroTimerLabel]; [pomodoroText addArrangedSubview:self.pomodoroDetailLabel];
+    NSStackView *pomodoroRow = [NSStackView stackViewWithViews:@[self.pomodoroIllustration, pomodoroText]]; pomodoroRow.spacing = 12; pomodoroRow.alignment = NSLayoutAttributeCenterY;
+    [pomodoroText.widthAnchor constraintEqualToAnchor:pomodoroRow.widthAnchor constant:-68].active = YES;
+    NSView *pomodoroCard = [self card:pomodoroRow]; [stack addArrangedSubview:pomodoroCard]; [pomodoroCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    self.pomodoroPrimaryButton = [self button:@"開始" selector:@selector(pauseOrResumePomodoro:)]; self.pomodoroPrimaryButton.toolTip = @"集中と休憩を交互に始めます";
+    self.pomodoroStopButton = [self button:@"終了" selector:@selector(stopPomodoro:)]; self.pomodoroStopButton.toolTip = @"ポモドーロを終了し、25分から戻します";
+    self.pomodoroSettingsButton = [self button:@"時間を設定" selector:@selector(configurePomodoro:)]; self.pomodoroSettingsButton.toolTip = @"集中と休憩の時間を変更します";
+    NSStackView *pomodoroActions = [NSStackView stackViewWithViews:@[self.pomodoroPrimaryButton, self.pomodoroStopButton, self.pomodoroSettingsButton]]; pomodoroActions.spacing = 12; [stack addArrangedSubview:pomodoroActions];
+    self.pomodoroRemainingSeconds = [self pomodoroFocusMinutes] * 60; [self updatePomodoroUI];
     NSButton *configure = [self button:@"通知の予定を設定" selector:@selector(configureSchedule:)]; configure.toolTip = @"曜日ごとの出勤・退勤時刻を設定します";
     NSButton *test = [self button:@"表示をテスト" selector:@selector(testReminder:)]; test.toolTip = @"通知内のKING OF TIMEと再通知の選択肢を確認します。再通知は予約しません";
     NSButton *recorder = [self button:@"KING OF TIMEで打刻" selector:@selector(openRecorder:)]; recorder.toolTip = @"アプリ内に公式Myレコーダーを開きます。初回はログインしてください";
@@ -728,7 +875,7 @@
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。出勤の通知では退勤ボタンを隠し、退勤の通知では出勤ボタンを隠します。「両方表示」で両方出せます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
+    [self showMessage:@"「通知の予定を設定」で、月〜金の出勤・退勤時刻を入力し、「保存して開始」を押してください。通知しない曜日はチェックを外します。出勤は5分前、退勤は予定時刻に通知します。\n\nポモドーロは「開始」で集中と休憩を交互に繰り返します。一時停止中は、同じ場所の「再開」から続けられます。\n\n通知の「打刻画面を開く」を押すと、KING OF TIMEを表示します。出勤の通知では退勤ボタンを隠し、退勤の通知では出勤ボタンを隠します。「両方表示」で両方出せます。再通知は10分後・30分後・1時間後・2時間後です。設定画面を閉じても通知は続きます。停止はこのアプリから行えます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";
@@ -927,6 +1074,7 @@
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     if (self.notificationMode) return NO;
+    if (self.pomodoroRunning) return NO;
     for (ReminderController *notification in self.notifications.allValues) if (notification.reminderTimer || notification.showingAlert) return NO;
     return YES;
 }
