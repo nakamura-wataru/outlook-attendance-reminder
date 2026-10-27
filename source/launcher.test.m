@@ -229,6 +229,7 @@ int main(void) {
         puts("PASS: schedule settings open from the main action");
         ManagerWindowProbe *manager = [[ManagerWindowProbe alloc] init]; [manager showManager];
         Check([manager.window.title isEqual:@"ときとも"], @"The main window uses the new app name");
+        Check([manager.pomodoroTitleLabel.stringValue isEqual:@"ポモドーロ"] && manager.pomodoroModeLabel.hidden, @"The idle card identifies the Pomodoro feature without claiming a running mode");
         NSTitlebarAccessoryViewController *accessory = manager.window.titlebarAccessoryViewControllers.firstObject;
         NSButton *gear = ButtonForAction(accessory.view, @selector(openSettings:));
         Check(accessory.layoutAttribute == NSLayoutAttributeRight && ![gear isDescendantOf:manager.window.contentView], @"Settings lives at the trailing end of the native title bar");
@@ -261,8 +262,17 @@ int main(void) {
         NSRect actionAfter = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
         Check(NSEqualRects(actionBefore, actionAfter) && [manager.pomodoroPrimaryButton.title isEqual:@"再開"] && !manager.pomodoroStopButton.hidden, @"Pause and resume stay in place while end remains available");
         CheckSummaryAlignment(manager);
+        Check([manager.pomodoroTitleLabel.stringValue isEqual:@"ポモドーロ"] && [manager.pomodoroModeLabel.stringValue isEqual:@"集中モード・一時停止中"], @"Pausing changes the status without changing the card title");
         manager.pomodoroResting = YES; [manager updatePomodoroUI]; CheckSummaryAlignment(manager);
+        Check([manager.pomodoroTitleLabel.stringValue isEqual:@"ポモドーロ"] && [manager.pomodoroModeLabel.stringValue isEqual:@"休憩モード・一時停止中"], @"The break uses the same title and a separate paused status");
+        manager.pomodoroPaused = NO; [manager updatePomodoroUI];
+        Check([manager.pomodoroModeLabel.stringValue isEqual:@"休憩モード"], @"A running break is shown beside the timer");
+        manager.pomodoroRemainingSeconds = 7200; manager.pomodoroPaused = YES; [manager updatePomodoroUI];
+        CheckSummaryAlignment(manager);
+        NSRect numberFrame = manager.pomodoroTimerLabel.frame, modeFrame = manager.pomodoroModeLabel.frame;
+        Check(NSMaxX(numberFrame) <= NSMinX(modeFrame) && NSMaxX(modeFrame) <= NSWidth(manager.pomodoroModeLabel.superview.bounds), @"A three-digit timer and the longest status fit without overlapping");
         [manager stopPomodoro:nil]; Check(manager.pomodoroStopButton.hidden, @"Ending the timer hides end again");
+        Check(manager.pomodoroModeLabel.hidden && [manager.pomodoroTitleLabel.stringValue isEqual:@"ポモドーロ"], @"Ending hides the running status and keeps the feature title");
         [manager.overviewTimer invalidate]; [manager.window orderOut:nil]; [manager.settingsWindow orderOut:nil];
         puts("PASS: compact main screen routes settings without losing timer controls");
         WindowProbe *window = [[WindowProbe alloc] init];

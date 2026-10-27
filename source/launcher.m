@@ -113,6 +113,7 @@
 @property BOOL notificationRecorderOpen;
 @property BOOL recorderShowsBothPunches;
 @property NSButton *showBothPunchesButton;
+@property NSTextField *pomodoroTitleLabel;
 @property NSTextField *pomodoroModeLabel;
 @property NSTextField *pomodoroTimerLabel;
 @property NSTextField *pomodoroDetailLabel;
@@ -324,7 +325,8 @@
     NSInteger seconds = MAX(0, self.pomodoroRemainingSeconds);
     NSInteger minutes = seconds / 60, remainder = seconds % 60;
     NSString *mode = self.pomodoroResting ? @"休憩モード" : @"集中モード";
-    self.pomodoroModeLabel.stringValue = self.pomodoroPaused ? [mode stringByAppendingString:@"を一時停止中"] : mode;
+    self.pomodoroModeLabel.hidden = !self.pomodoroRunning;
+    self.pomodoroModeLabel.stringValue = self.pomodoroRunning ? (self.pomodoroPaused ? [mode stringByAppendingString:@"・一時停止中"] : mode) : @"";
     self.pomodoroTimerLabel.stringValue = [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)remainder];
     self.pomodoroDetailLabel.stringValue = [NSString stringWithFormat:@"集中 %ld分・休憩 %ld分", (long)[self pomodoroFocusMinutes], (long)[self pomodoroBreakMinutes]];
     self.pomodoroSettingsSummary.stringValue = self.pomodoroDetailLabel.stringValue;
@@ -459,11 +461,20 @@
     NSView *statusCard = [self summaryCardWithIcon:nextClock content:next actions:nil]; [stack addArrangedSubview:statusCard];
     [statusCard.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.pomodoroIllustration = [[PomodoroIllustration alloc] init];
-    self.pomodoroModeLabel = [self label:@"集中モード" size:15 strong:YES muted:NO];
+    self.pomodoroTitleLabel = [self label:@"ポモドーロ" size:15 strong:YES muted:NO];
+    self.pomodoroModeLabel = [self label:@"" size:12 strong:NO muted:YES];
     self.pomodoroTimerLabel = [self label:@"25:00" size:28 strong:YES muted:NO];
     self.pomodoroTimerLabel.font = [NSFont monospacedDigitSystemFontOfSize:28 weight:NSFontWeightSemibold];
     self.pomodoroDetailLabel = [self label:@"" size:13 strong:NO muted:YES];
-    NSStackView *pomodoroText = [self verticalStack:3]; [pomodoroText addArrangedSubview:self.pomodoroModeLabel]; [pomodoroText addArrangedSubview:self.pomodoroTimerLabel]; [pomodoroText addArrangedSubview:self.pomodoroDetailLabel];
+    NSView *timerSpacer = [[NSView alloc] init];
+    [timerSpacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    for (NSView *label in @[self.pomodoroTimerLabel, self.pomodoroModeLabel]) {
+        [label setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [label setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    NSStackView *timerRow = [NSStackView stackViewWithViews:@[self.pomodoroTimerLabel, self.pomodoroModeLabel, timerSpacer]];
+    timerRow.spacing = 8; timerRow.alignment = NSLayoutAttributeCenterY; timerRow.detachesHiddenViews = YES;
+    NSStackView *pomodoroText = [self verticalStack:3]; [pomodoroText addArrangedSubview:self.pomodoroTitleLabel]; [pomodoroText addArrangedSubview:timerRow]; [pomodoroText addArrangedSubview:self.pomodoroDetailLabel];
     self.pomodoroPrimaryButton = [self button:@"開始" selector:@selector(pauseOrResumePomodoro:)]; self.pomodoroPrimaryButton.toolTip = @"集中と休憩を交互に始めます";
     [self.pomodoroPrimaryButton.widthAnchor constraintEqualToConstant:84].active = YES;
     self.pomodoroPrimaryButton.bezelColor = [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
