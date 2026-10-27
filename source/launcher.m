@@ -125,6 +125,8 @@
 @property BOOL pomodoroRunning;
 @property BOOL pomodoroPaused;
 @property BOOL pomodoroResting;
+@property BOOL pomodoroAwaitingConfirmation;
+@property NSAlert *pomodoroTransitionAlert;
 @property NSInteger pomodoroRemainingSeconds;
 - (NSString *)blockedPunchLabel;
 @end
@@ -135,6 +137,7 @@
     self.commandBusy = busy;
     if (busy) self.overviewRevision++;
     for (NSButton *button in self.buttons) button.enabled = !busy;
+    self.pomodoroPrimaryButton.enabled = !busy && !self.pomodoroAwaitingConfirmation;
     self.pomodoroStopButton.enabled = !busy && self.pomodoroRunning;
 }
 - (void)runCommand:(NSString *)command input:(NSString *)input completion:(void (^)(BOOL, NSString *))completion {
@@ -326,12 +329,14 @@
     NSInteger minutes = seconds / 60, remainder = seconds % 60;
     NSString *mode = self.pomodoroResting ? @"休憩モード" : @"集中モード";
     self.pomodoroModeLabel.hidden = !self.pomodoroRunning;
-    self.pomodoroModeLabel.stringValue = self.pomodoroRunning ? (self.pomodoroPaused ? [mode stringByAppendingString:@"・一時停止中"] : mode) : @"";
+    NSString *state = self.pomodoroAwaitingConfirmation ? @"・開始待ち" : self.pomodoroPaused ? @"・一時停止中" : @"";
+    self.pomodoroModeLabel.stringValue = self.pomodoroRunning ? [mode stringByAppendingString:state] : @"";
     self.pomodoroTimerLabel.stringValue = [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)remainder];
     self.pomodoroDetailLabel.stringValue = [NSString stringWithFormat:@"集中 %ld分・休憩 %ld分", (long)[self pomodoroFocusMinutes], (long)[self pomodoroBreakMinutes]];
     self.pomodoroSettingsSummary.stringValue = self.pomodoroDetailLabel.stringValue;
     self.pomodoroIllustration.resting = self.pomodoroResting; [self.pomodoroIllustration setNeedsDisplay:YES];
     self.pomodoroPrimaryButton.title = self.pomodoroRunning ? (self.pomodoroPaused ? @"再開" : @"一時停止") : @"開始";
+    self.pomodoroPrimaryButton.enabled = !self.commandBusy && !self.pomodoroAwaitingConfirmation;
     self.pomodoroStopButton.hidden = !self.pomodoroRunning;
     self.pomodoroStopButton.enabled = self.pomodoroRunning && !self.commandBusy;
     self.pomodoroPrimaryButton.toolTip = self.pomodoroRunning ? (self.pomodoroPaused ? @"残り時間から再開します" : @"集中・休憩タイマーを一時停止します") : @"集中と休憩を交互に始めます";
@@ -340,34 +345,56 @@
 - (void)showPomodoroTransition {
     NSAlert *alert = [[NSAlert alloc] init]; BOOL resting = self.pomodoroResting;
     alert.messageText = resting ? @"休憩をはじめましょう" : @"集中モードをはじめます";
-    alert.informativeText = resting ? [NSString stringWithFormat:@"%ld分間、ひと息つきましょう。終わると自動で集中モードに戻ります。", (long)[self pomodoroBreakMinutes]] : [NSString stringWithFormat:@"%ld分間、ひとつのことに取り組みましょう。終わると休憩モードに切り替わります。", (long)[self pomodoroFocusMinutes]];
+    alert.informativeText = [NSString stringWithFormat:@"「続ける」を押すと、%ld分の%@タイマーを開始します。", (long)(resting ? [self pomodoroBreakMinutes] : [self pomodoroFocusMinutes]), resting ? @"休憩" : @"集中"];
     alert.icon = [self pomodoroImageForResting:resting]; [alert addButtonWithTitle:@"続ける"];
-    if (self.window) { [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [alert beginSheetModalForWindow:self.window completionHandler:nil]; }
+    self.pomodoroTransitionAlert = alert;
+    if (self.window) {
+        [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+        [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+            if (self.pomodoroTransitionAlert != alert) return;
+            self.pomodoroTransitionAlert = nil;
+            if (response == NSAlertFirstButtonReturn) [self continuePomodoro]; else [self stopPomodoro:nil];
+        }];
+    }
 }
 - (void)startPomodoroTimer {
     [self.pomodoroTimer invalidate];
     self.pomodoroTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(pomodoroTick:) userInfo:nil repeats:YES];
 }
 - (void)startPomodoroMode:(BOOL)resting announce:(BOOL)announce {
+    [self dismissPomodoroTransition];
+    [self.pomodoroTimer invalidate]; self.pomodoroTimer = nil;
     self.pomodoroResting = resting; self.pomodoroRemainingSeconds = [self pomodoroCurrentDurationSeconds];
-    self.pomodoroRunning = YES; self.pomodoroPaused = NO; [self startPomodoroTimer]; [self updatePomodoroUI];
-    if (announce) [self showPomodoroTransition];
+    self.pomodoroRunning = YES; self.pomodoroPaused = NO; self.pomodoroAwaitingConfirmation = announce;
+    [self updatePomodoroUI];
+    if (announce) [self showPomodoroTransition]; else [self startPomodoroTimer];
+}
+- (void)continuePomodoro {
+    if (!self.pomodoroRunning || !self.pomodoroAwaitingConfirmation) return;
+    self.pomodoroAwaitingConfirmation = NO; [self startPomodoroTimer]; [self updatePomodoroUI];
+}
+- (void)dismissPomodoroTransition {
+    NSAlert *alert = self.pomodoroTransitionAlert; self.pomodoroTransitionAlert = nil;
+    self.pomodoroAwaitingConfirmation = NO;
+    if (alert.window.sheetParent) [alert.window.sheetParent endSheet:alert.window returnCode:NSModalResponseCancel];
 }
 - (void)startPomodoro:(id)sender { [self startPomodoroMode:NO announce:YES]; }
 - (void)pauseOrResumePomodoro:(id)sender {
     if (!self.pomodoroRunning) { [self startPomodoro:nil]; return; }
+    if (self.pomodoroAwaitingConfirmation) return;
     self.pomodoroPaused = !self.pomodoroPaused;
     if (self.pomodoroPaused) { [self.pomodoroTimer invalidate]; self.pomodoroTimer = nil; }
     else [self startPomodoroTimer];
     [self updatePomodoroUI];
 }
 - (void)stopPomodoro:(id)sender {
+    [self dismissPomodoroTransition];
     [self.pomodoroTimer invalidate]; self.pomodoroTimer = nil;
     self.pomodoroRunning = NO; self.pomodoroPaused = NO; self.pomodoroResting = NO;
     self.pomodoroRemainingSeconds = [self pomodoroFocusMinutes] * 60; [self updatePomodoroUI];
 }
 - (void)pomodoroTick:(NSTimer *)timer {
-    if (!self.pomodoroRunning || self.pomodoroPaused) return;
+    if (!self.pomodoroRunning || self.pomodoroPaused || self.pomodoroAwaitingConfirmation) return;
     self.pomodoroRemainingSeconds--;
     if (self.pomodoroRemainingSeconds <= 0) [self startPomodoroMode:!self.pomodoroResting announce:YES];
     else [self updatePomodoroUI];
@@ -956,7 +983,7 @@
     self.recorderStatus.stringValue = @"画面の読み込みが停止しました。「再読み込み」で開き直してください。";
 }
 - (void)help:(id)sender {
-    [self showMessage:@"右上の歯車から設定を開き、「通知の予定を設定」で月〜金の出勤・退勤時刻を入力してください。出勤は5分前、退勤は予定時刻に通知します。通知の停止・再開と表示テストも設定から行えます。\n\nポモドーロは「開始」で集中と休憩を繰り返します。「一時停止」「再開」で中断・再開し、「終了」で止められます。時間の変更は設定の「ポモドーロ」から行います。\n\n「KING OF TIMEで打刻」や通知の「打刻画面を開く」から、公式の打刻画面を表示します。まだ仕事中なら通知の再通知を選べます。"];
+    [self showMessage:@"右上の歯車から設定を開き、「通知の予定を設定」で月〜金の出勤・退勤時刻を入力してください。出勤は5分前、退勤は予定時刻に通知します。通知の停止・再開と表示テストも設定から行えます。\n\nポモドーロは「開始」で集中と休憩を繰り返します。各モードは、お知らせの「続ける」を押してからタイマーが始まります。「一時停止」「再開」で中断・再開し、「終了」で止められます。時間の変更は設定の「ポモドーロ」から行います。\n\n「KING OF TIMEで打刻」や通知の「打刻画面を開く」から、公式の打刻画面を表示します。まだ仕事中なら通知の再通知を選べます。"];
 }
 - (NSString *)reminderMessage {
     NSString *message = @"表示テストです。再通知は予約しません。\n「打刻画面を開く」で実際のKING OF TIMEを表示します。";

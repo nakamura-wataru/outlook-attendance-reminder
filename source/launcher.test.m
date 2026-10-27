@@ -111,7 +111,6 @@
 - (void)runCommand:(NSString *)command input:(NSString *)input blocking:(BOOL)blocking completion:(void (^)(BOOL, NSString *))completion {
     completion(YES, @"{\"configured\":true,\"enabled\":true,\"nextReminder\":null}");
 }
-- (void)showPomodoroTransition {}
 @end
 static NSButton *ButtonForAction(NSView *view, SEL action) {
     if ([view isKindOfClass:NSButton.class] && ((NSButton *)view).action == action) return (NSButton *)view;
@@ -184,14 +183,22 @@ int main(void) {
         pomodoro.pomodoroDetailLabel = [NSTextField labelWithString:@""]; pomodoro.pomodoroIllustration = [[PomodoroIllustration alloc] init];
         pomodoro.pomodoroPrimaryButton = [NSButton new]; pomodoro.pomodoroStopButton = [NSButton new];
         [pomodoro startPomodoro:nil];
-        Check(pomodoro.pomodoroRunning && !pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 1500 && pomodoro.announcements == 1, @"Pomodoro starts in a 25 minute focus mode");
+        Check(pomodoro.pomodoroRunning && !pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 1500 && pomodoro.announcements == 1 && pomodoro.pomodoroAwaitingConfirmation && !pomodoro.pomodoroTimer.valid, @"Focus waits at 25 minutes until its announcement is confirmed");
+        [pomodoro pomodoroTick:nil]; [pomodoro pauseOrResumePomodoro:nil];
+        Check(pomodoro.pomodoroRemainingSeconds == 1500 && pomodoro.pomodoroAwaitingConfirmation && !pomodoro.pomodoroPrimaryButton.enabled, @"Waiting cannot count down or bypass confirmation via the primary action");
+        [pomodoro continuePomodoro];
+        Check(!pomodoro.pomodoroAwaitingConfirmation && pomodoro.pomodoroTimer.valid && pomodoro.pomodoroPrimaryButton.enabled, @"Continue starts the focus timer");
         [pomodoro pauseOrResumePomodoro:nil];
         Check(pomodoro.pomodoroPaused && [pomodoro.pomodoroPrimaryButton.title isEqual:@"再開"] && !pomodoro.pomodoroTimer.valid, @"The same action changes from pause to resume");
         [pomodoro pauseOrResumePomodoro:nil]; pomodoro.pomodoroRemainingSeconds = 1; [pomodoro pomodoroTick:nil];
-        Check(!pomodoro.pomodoroPaused && pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 300 && pomodoro.announcements == 2, @"Focus automatically changes to a five minute break");
+        Check(!pomodoro.pomodoroPaused && pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 300 && pomodoro.announcements == 2 && pomodoro.pomodoroAwaitingConfirmation && !pomodoro.pomodoroTimer.valid, @"The next break waits at five minutes for Continue");
+        [pomodoro pomodoroTick:nil]; Check(pomodoro.pomodoroRemainingSeconds == 300, @"The break does not count down behind its announcement");
+        [pomodoro continuePomodoro]; pomodoro.pomodoroRemainingSeconds = 1; [pomodoro pomodoroTick:nil];
+        Check(!pomodoro.pomodoroResting && pomodoro.pomodoroRemainingSeconds == 1500 && pomodoro.announcements == 3 && pomodoro.pomodoroAwaitingConfirmation && !pomodoro.pomodoroTimer.valid, @"Every following focus also requires Continue");
         NSApplication *pomodoroApplication = [NSApplication sharedApplication];
         Check(![pomodoro applicationShouldTerminateAfterLastWindowClosed:pomodoroApplication], @"An active Pomodoro survives closing the window");
         [pomodoro stopPomodoro:nil];
+        [pomodoro continuePomodoro];
         Check(!pomodoro.pomodoroRunning && [pomodoro.pomodoroPrimaryButton.title isEqual:@"開始"] && pomodoro.pomodoroRemainingSeconds == 1500, @"Stopping returns the timer to its focus duration");
         puts("PASS: Pomodoro repeats focus and short breaks until stopped");
         ScheduleSaveProbe *scheduleSave = [[ScheduleSaveProbe alloc] init];
@@ -256,7 +263,15 @@ int main(void) {
         Check(settings.attachedSheet != nil && manager.window.attachedSheet == nil, @"Pomodoro editing attaches to the settings window");
         [settings endSheet:settings.attachedSheet returnCode:NSAlertSecondButtonReturn];
         [settings orderOut:nil]; [gear performClick:nil]; Check(manager.settingsWindow == settings, @"Reopening settings reuses the same window");
-        [manager startPomodoro:nil]; [manager.window.contentView layoutSubtreeIfNeeded];
+        [manager startPomodoro:nil];
+        Check(manager.window.attachedSheet == manager.pomodoroTransitionAlert.window && manager.pomodoroAwaitingConfirmation, @"Starting opens the confirmation sheet");
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.1]];
+        Check(manager.pomodoroRemainingSeconds == [manager pomodoroFocusMinutes] * 60 && !manager.pomodoroTimer.valid, @"Real elapsed time does not consume the mode before Continue");
+        [manager.pomodoroTransitionAlert.buttons.firstObject performClick:nil];
+        deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+        while (manager.pomodoroAwaitingConfirmation && deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+        Check(!manager.pomodoroAwaitingConfirmation && manager.pomodoroTimer.valid, @"Clicking the real Continue button starts the timer");
+        [manager.window.contentView layoutSubtreeIfNeeded];
         NSRect actionBefore = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
         [manager pauseOrResumePomodoro:nil]; [manager.window.contentView layoutSubtreeIfNeeded];
         NSRect actionAfter = [manager.pomodoroPrimaryButton convertRect:manager.pomodoroPrimaryButton.bounds toView:manager.window.contentView];
@@ -273,6 +288,9 @@ int main(void) {
         Check(NSMaxX(numberFrame) <= NSMinX(modeFrame) && NSMaxX(modeFrame) <= NSWidth(manager.pomodoroModeLabel.superview.bounds), @"A three-digit timer and the longest status fit without overlapping");
         [manager stopPomodoro:nil]; Check(manager.pomodoroStopButton.hidden, @"Ending the timer hides end again");
         Check(manager.pomodoroModeLabel.hidden && [manager.pomodoroTitleLabel.stringValue isEqual:@"ポモドーロ"], @"Ending hides the running status and keeps the feature title");
+        [manager startPomodoro:nil]; [manager stopPomodoro:nil];
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+        Check(!manager.pomodoroRunning && !manager.pomodoroTimer.valid && !manager.pomodoroTransitionAlert && !manager.window.attachedSheet, @"Stopping while awaiting Continue dismisses the sheet without restarting");
         [manager.overviewTimer invalidate]; [manager.window orderOut:nil]; [manager.settingsWindow orderOut:nil];
         puts("PASS: compact main screen routes settings without losing timer controls");
         WindowProbe *window = [[WindowProbe alloc] init];

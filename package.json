@@ -1,6 +1,6 @@
 {
   "name": "outlook-attendance-reminder",
-  "version": "2.10.1",
+  "version": "2.10.2",
   "private": true,
   "description": "ときとも — 仕事の時間に、ちょうどいいひと区切り。打刻のお知らせとポモドーロのMacアプリ",
   "engines": {
